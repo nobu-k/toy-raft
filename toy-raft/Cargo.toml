@@ -8,7 +8,7 @@ publish = false
 tonic = "0.11"
 prost = "0.12"
 tokio = { version = "1", features = ["full"] }
-anyhow = "1"
+thiserror = "1"
 
 [build-dependencies]
 tonic-build = "0.11"
