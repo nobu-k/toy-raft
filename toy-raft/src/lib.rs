@@ -1,4 +1,5 @@
 mod config;
+mod grpc;
 mod server;
 
 pub use config::Config;

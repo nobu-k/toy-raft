@@ -1,4 +1,4 @@
 pub struct Config {
     pub id: String,
-    pub port: u16,
+    pub addr: String,
 }
