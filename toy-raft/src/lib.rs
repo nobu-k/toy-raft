@@ -1,14 +1,18 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
+mod config;
+mod grpc;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub use config::Config;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+use std::io::Error;
+
+pub struct Server {}
+
+impl Server {
+    pub fn new(config: Config) -> Result<Server, Error> {
+        Ok(Server {})
+    }
+
+    pub async fn run(&self) -> Result<(), Error> {
+        Ok(())
     }
 }

@@ -1,5 +1,3 @@
 [workspace]
-members = [
-    "toy-raft",
-]
+members = ["toy-raft", "examples/id-generator"]
 resolver = "2"
