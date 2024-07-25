@@ -1,0 +1,19 @@
+module(
+    name = "toy-raft",
+    version = "o.1.0",
+)
+
+bazel_dep(name = "protobuf", version = "23.1")
+
+bazel_dep(name = "rules_rust", version = "0.48.0")
+crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lockfile = "//:Cargo.lock",
+    manifests = [
+        "//:Cargo.toml",
+        "//toy-raft:Cargo.toml",
+        "//examples/id-generator:Cargo.toml",
+    ],
+)
+use_repo(crate, "crates")

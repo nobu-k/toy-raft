@@ -1,0 +1,28 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
+load("@crates//:defs.bzl", "all_crate_deps")
+
+cargo_build_script(
+    name = "build_script",
+    srcs = ["build.rs"],
+    build_script_env = {
+        "PROTOC_RLOCATION": "$(rlocationpath @protobuf//:protoc)",
+    },
+    crate_features = ["bazel"],
+    data = [
+        "//proto:raft.proto",
+        "@protobuf//:protoc",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = ["@rules_rust//tools/runfiles"] + all_crate_deps(
+        build = True,
+    ),
+)
+
+rust_library(
+    name = "toy-raft",
+    srcs = glob(["src/**/*.rs"]),
+    deps = [
+        ":build_script",
+    ] + all_crate_deps(),
+)
