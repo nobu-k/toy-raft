@@ -10,6 +10,7 @@ cargo_build_script(
     },
     crate_features = ["bazel"],
     data = [
+        "//proto:operations.proto",
         "//proto:raft.proto",
         "@protobuf//:protoc",
     ],

@@ -24,6 +24,14 @@ impl Raft {
         }
     }
 
+    pub fn state(&self) -> State {
+        self.state
+    }
+
+    pub fn voted_for(&self) -> Option<String> {
+        self.voted_for.clone()
+    }
+
     pub fn current_term(&self) -> u64 {
         self.current_term
     }

@@ -7,6 +7,7 @@ use crate::grpc;
 use crate::raft;
 
 pub struct Server {
+    id: String,
     addr: SocketAddr,
     state: Arc<Mutex<raft::Raft>>,
     log: Arc<Mutex<grpc::LogEntry>>,
@@ -22,7 +23,12 @@ impl Server {
             term: 0,
             data: vec![],
         }));
-        Ok(Server { addr, state, log })
+        Ok(Server {
+            id: config.id,
+            addr,
+            state,
+            log,
+        })
     }
 
     pub async fn run(self) -> Result<(), ServerError> {
@@ -69,6 +75,32 @@ impl grpc::raft_server::Raft for Server {
         Ok(tonic::Response::new(grpc::RequestVoteResponse {
             term: state.current_term(),
             vote_granted: state.grant_vote(msg),
+        }))
+    }
+}
+
+#[tonic::async_trait]
+impl grpc::operations_server::Operations for Server {
+    async fn status(
+        &self,
+        _: tonic::Request<grpc::StatusRequest>,
+    ) -> Result<tonic::Response<grpc::StatusResponse>, tonic::Status> {
+        let state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => return Err(tonic::Status::internal("Internal error")),
+        };
+
+        Ok(tonic::Response::new(grpc::StatusResponse {
+            term: state.current_term(),
+            state: match state.state() {
+                raft::State::Follower => grpc::State::Follower as i32,
+                raft::State::Candidate => grpc::State::Candidate as i32,
+                raft::State::Leader => grpc::State::Leader as i32,
+            },
+            leader_id: match state.state() {
+                raft::State::Leader => Some(self.id.clone()),
+                _ => state.voted_for(),
+            },
         }))
     }
 }

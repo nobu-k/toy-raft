@@ -1,1 +1,4 @@
-exports_files(["raft.proto"])
+exports_files([
+    "raft.proto",
+    "operations.proto",
+])

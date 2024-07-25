@@ -20,6 +20,9 @@ fn main() -> Result<()> {
     tonic_build::configure()
         .build_client(true)
         .build_server(true)
-        .compile(&["../proto/raft.proto"], &["../proto"])?;
+        .compile(
+            &["../proto/raft.proto", "../proto/operations.proto"],
+            &["../proto"],
+        )?;
     Ok(())
 }

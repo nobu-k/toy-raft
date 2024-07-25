@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package raft;
+
+// RPCs related to operations of Raft servers.
+service Operations {
+    // Returns the current status of the server.
+    rpc Status(StatusRequest) returns(StatusResponse) {}
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+    // The current term number of the Raft protocol that the server is
+    // recognizing.
+    uint64 term = 1;
+
+    // The current state of the Raft server.
+    State state = 2;
+
+    // The current leader ID of the Raft cluster that the server is recognizing.
+    optional string leader_id = 3;
+
+    // uint64 commit_index = 4;
+    // uint64 last_applied = 5;
+}
+
+enum State {
+    FOLLOWER = 0;
+    CANDIDATE = 1;
+    LEADER = 2;
+}
