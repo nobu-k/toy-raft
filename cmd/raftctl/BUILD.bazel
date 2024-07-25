@@ -1,0 +1,25 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("@crates//:defs.bzl", "all_crate_deps")
+
+rust_library(
+    name = "raftctl_lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_name = "raftctl",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+    ),
+    deps = [
+        "//toy-raft",
+    ] + all_crate_deps(
+        normal = True,
+    ),
+)
+
+rust_binary(
+    name = "raftctl",
+    srcs = ["src/main.rs"],
+    deps = [":raftctl_lib"] + all_crate_deps(),
+)

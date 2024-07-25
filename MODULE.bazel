@@ -13,6 +13,7 @@ crate.from_cargo(
     manifests = [
         "//:Cargo.toml",
         "//toy-raft:Cargo.toml",
+        "//cmd/raftctl:Cargo.toml",
         "//examples/id-generator:Cargo.toml",
     ],
 )

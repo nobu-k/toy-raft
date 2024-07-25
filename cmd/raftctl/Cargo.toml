@@ -1,0 +1,20 @@
+[package]
+name = "raftctl"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "raftctl"
+path = "src/main.rs"
+
+[lib]
+name = "raftctl"
+path = "src/lib.rs"
+
+[dependencies]
+clap = "4"
+tokio = { version = "1", features = ["full"] }
+tonic = "0.11"
+toy-raft = { path = "../../toy-raft" }
+anyhow = "1"
