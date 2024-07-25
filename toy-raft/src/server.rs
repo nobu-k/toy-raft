@@ -4,28 +4,25 @@ use std::sync::Mutex;
 
 use crate::config;
 use crate::grpc;
+use crate::raft;
 
 pub struct Server {
     addr: SocketAddr,
-    state: Arc<Mutex<State>>,
-}
-
-struct State {
-    current_term: u64,
-    voted_for: Option<String>,
-    log: Vec<grpc::LogEntry>, // TODO: save this to storage
+    state: Arc<Mutex<raft::Raft>>,
+    log: Arc<Mutex<grpc::LogEntry>>,
 }
 
 impl Server {
     pub fn new(config: config::Config) -> Result<Server, ServerError> {
         let addr = config.addr.parse()?;
 
-        let state = Arc::new(Mutex::new(State {
-            current_term: 0,
-            voted_for: None,
-            log: Vec::new(),
+        let state = Arc::new(Mutex::new(raft::Raft::new()));
+
+        let log = Arc::new(Mutex::new(grpc::LogEntry {
+            term: 0,
+            data: vec![],
         }));
-        Ok(Server { addr, state })
+        Ok(Server { addr, state, log })
     }
 
     pub async fn run(self) -> Result<(), ServerError> {
@@ -63,6 +60,15 @@ impl grpc::raft_server::Raft for Server {
         &self,
         request: tonic::Request<grpc::RequestVoteRequest>,
     ) -> Result<tonic::Response<grpc::RequestVoteResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("Not implemented"))
+        let msg = request.get_ref();
+
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => return Err(tonic::Status::internal("Internal error")),
+        };
+        Ok(tonic::Response::new(grpc::RequestVoteResponse {
+            term: state.current_term(),
+            vote_granted: state.grant_vote(msg),
+        }))
     }
 }
