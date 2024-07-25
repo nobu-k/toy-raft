@@ -3,6 +3,7 @@ name = "raftctl"
 version = "0.1.0"
 edition = "2021"
 publish = false
+description = "toy-raft cluster management tool"
 
 [[bin]]
 name = "raftctl"
@@ -13,7 +14,7 @@ name = "raftctl"
 path = "src/lib.rs"
 
 [dependencies]
-clap = "4"
+clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
 tonic = "0.11"
 toy-raft = { path = "../../toy-raft" }
