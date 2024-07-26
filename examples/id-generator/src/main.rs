@@ -1,4 +1,5 @@
 use clap::Parser;
+use tracing::info;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -15,7 +16,16 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .with_line_number(true)
+        .with_thread_ids(true)
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber)?;
+
     let args = Args::try_parse()?;
+    info!(addr = args.addr, id = args.id, "Starting server");
 
     let server = toy_raft::Server::new(toy_raft::Config {
         id: args.id,

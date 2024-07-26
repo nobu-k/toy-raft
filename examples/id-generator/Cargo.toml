@@ -6,6 +6,9 @@ publish = false
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-toy-raft = { path = "../../toy-raft" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+
+toy-raft = { path = "../../toy-raft" }
