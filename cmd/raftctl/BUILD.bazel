@@ -21,5 +21,8 @@ rust_library(
 rust_binary(
     name = "raftctl",
     srcs = ["src/main.rs"],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+    ),
     deps = [":raftctl_lib"] + all_crate_deps(),
 )

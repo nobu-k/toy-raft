@@ -33,8 +33,13 @@ impl Server {
 
     pub async fn run(self) -> Result<(), ServerError> {
         let addr = self.addr.clone();
+        let server = Arc::new(self);
+
         match tonic::transport::Server::builder()
-            .add_service(grpc::raft_server::RaftServer::new(self))
+            .add_service(grpc::raft_server::RaftServer::new(server.clone()))
+            .add_service(grpc::operations_server::OperationsServer::new(
+                server.clone(),
+            ))
             .serve(addr)
             .await
         {
@@ -54,7 +59,7 @@ pub enum ServerError {
 }
 
 #[tonic::async_trait]
-impl grpc::raft_server::Raft for Server {
+impl grpc::raft_server::Raft for Arc<Server> {
     async fn append_entries(
         &self,
         request: tonic::Request<grpc::AppendEntriesRequest>,
@@ -80,7 +85,7 @@ impl grpc::raft_server::Raft for Server {
 }
 
 #[tonic::async_trait]
-impl grpc::operations_server::Operations for Server {
+impl grpc::operations_server::Operations for Arc<Server> {
     async fn status(
         &self,
         _: tonic::Request<grpc::StatusRequest>,

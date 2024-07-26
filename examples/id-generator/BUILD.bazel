@@ -1,0 +1,8 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@crates//:defs.bzl", "all_crate_deps")
+
+rust_binary(
+    name = "id-generator",
+    srcs = ["src/main.rs"],
+    deps = ["//toy-raft"] + all_crate_deps(),
+)

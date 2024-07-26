@@ -475,6 +475,7 @@ dependencies = [
 name = "id-generator"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "tokio",
  "toy-raft",
 ]

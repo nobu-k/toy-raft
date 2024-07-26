@@ -1,5 +1,5 @@
 mod config;
-mod grpc;
+pub mod grpc;
 mod raft;
 mod server;
 
