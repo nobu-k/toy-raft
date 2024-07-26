@@ -16,6 +16,6 @@ path = "src/lib.rs"
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
-tonic = "0.11"
+tonic = "0.12"
 toy-raft = { path = "../../toy-raft" }
 anyhow = "1"
