@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -15,7 +16,15 @@ pub struct Server {
 
 impl Server {
     pub fn new(config: config::Config) -> Result<Server, ServerError> {
-        let addr = config.addr.parse()?;
+        let addrs: Vec<_> = config
+            .addr
+            .to_socket_addrs()
+            .map_err(|e| ServerError::InvalidAddress(Arc::new(e)))?
+            .collect();
+        if addrs.len() != 1 {
+            return Err(ServerError::TooManyAddresses(addrs.len(), config.addr));
+        }
+        let addr = addrs[0];
 
         let state = Arc::new(Mutex::new(raft::Raft::new()));
 
@@ -54,8 +63,11 @@ pub enum ServerError {
     #[error("internal error")]
     InternalError,
 
-    #[error(transparent)]
-    InvalidAddress(#[from] std::net::AddrParseError),
+    #[error("invalid address: {}", .0)]
+    InvalidAddress(#[source] Arc<dyn std::error::Error + Sync + Send + 'static>),
+
+    #[error("too many addresses: {}: {}", .0, .1)]
+    TooManyAddresses(usize, String),
 }
 
 #[tonic::async_trait]
