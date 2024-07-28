@@ -3,6 +3,7 @@ use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use hyper::body::Body;
 use tower::layer;
 use tower::layer::layer_fn;
 use tracing::{error, info};
@@ -25,9 +26,12 @@ struct AccessLogging<S> {
 
 // Alternative: https://github.com/hyperium/tonic/blob/2d9791198fdec1b2e8530bd3365d0c0ddb290f4c/examples/src/tower/server.rs
 
-impl<S, Request> tower::Service<Request> for AccessLogging<S>
+type TonicRequest = hyper::Request<tonic::body::BoxBody>;
+type TonicResponse = hyper::Response<tonic::body::BoxBody>;
+
+impl<S> tower::Service<TonicRequest> for AccessLogging<S>
 where
-    S: tower::Service<Request> + Clone + Send + 'static,
+    S: tower::Service<TonicRequest, Response = TonicResponse> + Clone + Send + 'static,
     S::Error: std::fmt::Display,
     S::Future: Send + 'static,
 {
@@ -41,11 +45,18 @@ where
     ) -> std::task::Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
-    fn call(&mut self, request: Request) -> Self::Future {
+    fn call(&mut self, request: TonicRequest) -> Self::Future {
+        let uri = request.uri().path().to_owned();
+        let method = request.method().to_string();
+        let size = request.size_hint().lower();
+
         let f = self.inner.call(request);
         AccessLoggingFuture {
             inner_future: f,
             start: std::time::Instant::now(),
+            method: method,
+            uri: uri,
+            size_hint: size,
         }
     }
 }
@@ -55,12 +66,15 @@ pin_project_lite::pin_project! {
         #[pin]
         inner_future: F,
         start: std::time::Instant,
+        method: String,
+        uri: String,
+        size_hint: u64,
     }
 }
 
-impl<F, Response, Error> std::future::Future for AccessLoggingFuture<F>
+impl<F, Error> std::future::Future for AccessLoggingFuture<F>
 where
-    F: std::future::Future<Output = Result<Response, Error>>,
+    F: std::future::Future<Output = Result<TonicResponse, Error>>,
     Error: std::fmt::Display,
 {
     type Output = F::Output;
@@ -70,12 +84,26 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let project = self.project();
-
+        let elapsed = project.start.elapsed().as_secs_f64();
         match project.inner_future.poll(cx) {
             std::task::Poll::Ready(result) => {
                 match &result {
-                    Ok(_) => info!(elapsed = project.start.elapsed().as_secs_f64(), "Access"),
-                    Err(e) => error!(err = e.to_string(), "Access"),
+                    Ok(res) => info!(
+                        elapsed,
+                        method = project.method,
+                        uri = project.uri,
+                        size = project.size_hint,
+                        status = res.status().as_u16(),
+                        "Access"
+                    ),
+                    Err(e) => error!(
+                        err = e.to_string(),
+                        elapsed,
+                        method = project.method,
+                        uri = project.uri,
+                        size = project.size_hint,
+                        "Access"
+                    ),
                 }
 
                 std::task::Poll::Ready(result)
