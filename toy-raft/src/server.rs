@@ -1,11 +1,11 @@
+use std::error::Error;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use hyper::body::Body;
-use tower::layer;
-use tower::layer::layer_fn;
+use tracing::info_span;
 use tracing::{error, info};
 
 use crate::config;
@@ -31,8 +31,10 @@ type TonicResponse = hyper::Response<tonic::body::BoxBody>;
 
 impl<S> tower::Service<TonicRequest> for AccessLogging<S>
 where
-    S: tower::Service<TonicRequest, Response = TonicResponse> + Clone + Send + 'static,
-    S::Error: std::fmt::Display,
+    S: tower::Service<TonicRequest, Response = TonicResponse, Error = tower::BoxError>
+        + Clone
+        + Send
+        + 'static,
     S::Future: Send + 'static,
 {
     type Response = S::Response;
@@ -72,10 +74,9 @@ pin_project_lite::pin_project! {
     }
 }
 
-impl<F, Error> std::future::Future for AccessLoggingFuture<F>
+impl<F> std::future::Future for AccessLoggingFuture<F>
 where
-    F: std::future::Future<Output = Result<TonicResponse, Error>>,
-    Error: std::fmt::Display,
+    F: std::future::Future<Output = Result<TonicResponse, tower::BoxError>>,
 {
     type Output = F::Output;
 
@@ -90,26 +91,46 @@ where
                 match &result {
                     Ok(res) => info!(
                         elapsed,
+                        status = tonic::Code::Ok as i32,
                         method = project.method,
                         uri = project.uri,
                         size = project.size_hint,
                         status = res.status().as_u16(),
                         "Access"
                     ),
-                    Err(e) => error!(
-                        err = e.to_string(),
-                        elapsed,
-                        method = project.method,
-                        uri = project.uri,
-                        size = project.size_hint,
-                        "Access"
-                    ),
+                    Err(e) => {
+                        let status = if let Some(status) = e.downcast_ref::<tonic::Status>() {
+                            status.code()
+                        } else {
+                            tonic::Code::Unknown
+                        };
+                        info!(
+                            err = e.to_string(),
+                            status = status as i32,
+                            elapsed,
+                            method = project.method,
+                            uri = project.uri,
+                            size = project.size_hint,
+                            "Access"
+                        );
+                    }
                 }
 
                 std::task::Poll::Ready(result)
             }
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AccessLoggingLayer;
+
+impl<S> tower::Layer<S> for AccessLoggingLayer {
+    type Service = AccessLogging<S>;
+
+    fn layer(&self, service: S) -> Self::Service {
+        AccessLogging { inner: service }
     }
 }
 
@@ -144,7 +165,7 @@ impl Server {
         let server = Arc::new(self);
 
         match tonic::transport::Server::builder()
-            .layer(layer_fn(|service| AccessLogging { inner: service }))
+            .layer(AccessLoggingLayer)
             .add_service(grpc::raft_server::RaftServer::new(server.clone()))
             .add_service(grpc::operations_server::OperationsServer::new(
                 server.clone(),
