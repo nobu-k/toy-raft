@@ -48,16 +48,12 @@ where
         self.inner.poll_ready(cx)
     }
     fn call(&mut self, request: TonicRequest) -> Self::Future {
-        let uri = request.uri().path().to_owned();
-        let method = request.method().to_string();
         let size = request.size_hint().lower();
 
         let f = self.inner.call(request);
         AccessLoggingFuture {
             inner_future: f,
             start: std::time::Instant::now(),
-            method: method,
-            uri: uri,
             size_hint: size,
         }
     }
@@ -68,8 +64,6 @@ pin_project_lite::pin_project! {
         #[pin]
         inner_future: F,
         start: std::time::Instant,
-        method: String,
-        uri: String,
         size_hint: u64,
     }
 }
@@ -91,11 +85,9 @@ where
                 match &result {
                     Ok(res) => info!(
                         elapsed,
-                        status = tonic::Code::Ok as i32,
-                        method = project.method,
-                        uri = project.uri,
+                        grpcStatus = tonic::Code::Ok as i32,
                         size = project.size_hint,
-                        status = res.status().as_u16(),
+                        httpStatus = res.status().as_u16(),
                         "Access"
                     ),
                     Err(e) => {
@@ -106,10 +98,8 @@ where
                         };
                         info!(
                             err = e.to_string(),
-                            status = status as i32,
+                            grpcStatus = status as i32,
                             elapsed,
-                            method = project.method,
-                            uri = project.uri,
                             size = project.size_hint,
                             "Access"
                         );
@@ -163,8 +153,14 @@ impl Server {
     pub async fn run(self) -> Result<(), ServerError> {
         let addr = self.addr.clone();
         let server = Arc::new(self);
+        let id = server.id.clone();
 
         match tonic::transport::Server::builder()
+            .trace_fn(move |request| {
+                let path = request.uri().path().to_owned();
+                let method = request.method().to_string();
+                info_span!("toy_raft_server", id, method, path)
+            })
             .layer(AccessLoggingLayer)
             .add_service(grpc::raft_server::RaftServer::new(server.clone()))
             .add_service(grpc::operations_server::OperationsServer::new(
