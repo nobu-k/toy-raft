@@ -4,7 +4,8 @@ use std::{
 };
 
 use tokio::sync::Mutex;
-use tracing::{error, info_span};
+use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
+use tracing::{error, info, info_span};
 
 use crate::{config, grpc, raft};
 
@@ -51,7 +52,12 @@ impl Server {
                 let method = request.method().to_string();
                 info_span!("toy_raft_server", id, method, path)
             })
-            .layer(crate::access_log::AccessLoggingLayer)
+            .layer(
+                TraceLayer::new_for_grpc()
+                    .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
+                    .on_failure(DefaultOnFailure::new().level(tracing::Level::INFO)),
+            )
+            //.layer(crate::access_log::AccessLoggingLayer)
             .add_service(grpc::raft_server::RaftServer::new(server.clone()))
             .add_service(grpc::operations_server::OperationsServer::new(
                 server.clone(),
@@ -113,7 +119,7 @@ impl grpc::operations_server::Operations for Arc<Server> {
     ) -> Result<tonic::Response<grpc::StatusResponse>, tonic::Status> {
         let state = self.state.lock().await;
         let state = state.state().await.map_err(|e| {
-            error!("Error getting state: {}", e);
+            error!(error = e.to_string(), "Error getting state");
             let mut s = tonic::Status::internal(format!("Internal error"));
             s.set_source(Arc::new(e));
             s
