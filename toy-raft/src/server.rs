@@ -1,9 +1,10 @@
 use std::{
     net::{SocketAddr, ToSocketAddrs},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
-use tracing::info_span;
+use tokio::sync::Mutex;
+use tracing::{error, info_span};
 
 use crate::{config, grpc, raft};
 
@@ -89,15 +90,17 @@ impl grpc::raft_server::Raft for Arc<Server> {
         &self,
         request: tonic::Request<grpc::RequestVoteRequest>,
     ) -> Result<tonic::Response<grpc::RequestVoteResponse>, tonic::Status> {
-        let msg = request.get_ref();
-
-        let mut state = match self.state.lock() {
-            Ok(state) => state,
-            Err(_) => return Err(tonic::Status::internal("Internal error")),
-        };
+        let msg = request.into_inner();
+        let (state, granted) = self
+            .state
+            .lock()
+            .await
+            .grant_vote(msg)
+            .await
+            .map_err(|e| tonic::Status::internal(format!("Internal error: {}", e)))?;
         Ok(tonic::Response::new(grpc::RequestVoteResponse {
-            term: state.current_term(),
-            vote_granted: state.grant_vote(msg),
+            term: state.current_term,
+            vote_granted: granted,
         }))
     }
 }
@@ -108,21 +111,23 @@ impl grpc::operations_server::Operations for Arc<Server> {
         &self,
         _: tonic::Request<grpc::StatusRequest>,
     ) -> Result<tonic::Response<grpc::StatusResponse>, tonic::Status> {
-        let state = match self.state.lock() {
-            Ok(state) => state,
-            Err(_) => return Err(tonic::Status::internal("Internal error")),
-        };
-
+        let state = self.state.lock().await;
+        let state = state.state().await.map_err(|e| {
+            error!("Error getting state: {}", e);
+            let mut s = tonic::Status::internal(format!("Internal error"));
+            s.set_source(Arc::new(e));
+            s
+        })?;
         Ok(tonic::Response::new(grpc::StatusResponse {
-            term: state.current_term(),
-            state: match state.state() {
-                raft::State::Follower => grpc::State::Follower as i32,
-                raft::State::Candidate => grpc::State::Candidate as i32,
-                raft::State::Leader => grpc::State::Leader as i32,
+            term: state.current_term,
+            state: match state.state {
+                raft::NodeState::Follower => grpc::State::Follower as i32,
+                raft::NodeState::Candidate => grpc::State::Candidate as i32,
+                raft::NodeState::Leader => grpc::State::Leader as i32,
             },
-            leader_id: match state.state() {
-                raft::State::Leader => Some(self.id.clone()),
-                _ => state.voted_for(),
+            leader_id: match state.state {
+                raft::NodeState::Leader => Some(self.id.clone()),
+                _ => state.voted_for,
             },
         }))
     }

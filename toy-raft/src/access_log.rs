@@ -1,3 +1,5 @@
+use std::error::Error;
+
 use hyper::body::Body;
 use tracing::info;
 
@@ -73,6 +75,8 @@ where
                         "Access"
                     ),
                     Err(e) => {
+                        // TODO: never comes here even if the RPC returns an error (i.e. Status).
+                        // To leave the right access log, inspecting Ok(res) is necessary.
                         let status = if let Some(status) = e.downcast_ref::<tonic::Status>() {
                             status.code()
                         } else {
