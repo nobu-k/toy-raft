@@ -1,4 +1,3 @@
-mod access_log;
 mod config;
 pub mod grpc;
 mod raft;

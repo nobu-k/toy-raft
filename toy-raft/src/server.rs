@@ -57,7 +57,6 @@ impl Server {
                     .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
                     .on_failure(DefaultOnFailure::new().level(tracing::Level::INFO)),
             )
-            //.layer(crate::access_log::AccessLoggingLayer)
             .add_service(grpc::raft_server::RaftServer::new(server.clone()))
             .add_service(grpc::operations_server::OperationsServer::new(
                 server.clone(),
