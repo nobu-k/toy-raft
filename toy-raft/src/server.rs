@@ -12,7 +12,7 @@ use crate::{config, grpc, raft};
 pub struct Server {
     id: String,
     addr: SocketAddr,
-    state: Arc<Mutex<raft::Raft>>,
+    actor: Arc<raft::Actor>,
     log: Arc<Mutex<grpc::LogEntry>>,
 }
 impl Server {
@@ -27,7 +27,7 @@ impl Server {
         }
         let addr = addrs[0];
 
-        let state = Arc::new(Mutex::new(raft::Raft::new()));
+        let actor = Arc::new(raft::Actor::new());
 
         let log = Arc::new(Mutex::new(grpc::LogEntry {
             term: 0,
@@ -36,7 +36,7 @@ impl Server {
         Ok(Server {
             id: config.id,
             addr,
-            state,
+            actor,
             log,
         })
     }
@@ -97,9 +97,7 @@ impl grpc::raft_server::Raft for Arc<Server> {
     ) -> Result<tonic::Response<grpc::RequestVoteResponse>, tonic::Status> {
         let msg = request.into_inner();
         let (state, granted) = self
-            .state
-            .lock()
-            .await
+            .actor
             .grant_vote(msg)
             .await
             .map_err(|e| tonic::Status::internal(format!("Internal error: {}", e)))?;
@@ -116,8 +114,7 @@ impl grpc::operations_server::Operations for Arc<Server> {
         &self,
         _: tonic::Request<grpc::StatusRequest>,
     ) -> Result<tonic::Response<grpc::StatusResponse>, tonic::Status> {
-        let state = self.state.lock().await;
-        let state = state.state().await.map_err(|e| {
+        let state = self.actor.state().await.map_err(|e| {
             error!(error = e.to_string(), "Error getting state");
             let mut s = tonic::Status::internal(format!("Internal error"));
             s.set_source(Arc::new(e));

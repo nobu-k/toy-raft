@@ -1,7 +1,7 @@
 use crate::grpc;
 use tracing::info;
 
-pub struct Raft {
+pub struct Actor {
     message_queue: tokio::sync::mpsc::Sender<Message>,
 }
 
@@ -12,11 +12,11 @@ pub enum NodeState {
     Leader,
 }
 
-impl Raft {
-    pub fn new() -> Raft {
+impl Actor {
+    pub fn new() -> Actor {
         let (tx, rx) = tokio::sync::mpsc::channel(32);
 
-        let actor = Actor {
+        let actor = ActorProcess {
             state: ActorState {
                 current_term: 0,
                 voted_for: None,
@@ -28,7 +28,7 @@ impl Raft {
         };
         tokio::spawn(actor.run());
 
-        Raft { message_queue: tx }
+        Actor { message_queue: tx }
     }
 
     pub async fn state(&self) -> Result<ActorState, MessageError> {
@@ -38,7 +38,7 @@ impl Raft {
     }
 
     pub async fn grant_vote(
-        &mut self,
+        &self,
         msg: grpc::RequestVoteRequest,
     ) -> Result<(ActorState, bool), MessageError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -61,7 +61,7 @@ pub enum MessageError {
     ReceiveError(#[from] tokio::sync::oneshot::error::RecvError),
 }
 
-struct Actor {
+struct ActorProcess {
     state: ActorState,
 
     /// Receiver for messages. This channel also acts as a trigger to stop the
@@ -85,7 +85,7 @@ enum Message {
     },
 }
 
-impl Actor {
+impl ActorProcess {
     pub async fn run(mut self) {
         info!("Starting Raft actor");
         loop {
