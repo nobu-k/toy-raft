@@ -16,6 +16,13 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args = Args::try_parse()?;
+
+    let config = toy_raft::Config::builder()
+        .id(args.id.clone())
+        .addr(args.addr.clone())
+        .build()?;
+
     let subscriber = tracing_subscriber::fmt()
         .json()
         .flatten_event(true)
@@ -27,12 +34,8 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::subscriber::set_global_default(subscriber)?;
 
-    let args = Args::try_parse()?;
     info!(addr = args.addr, id = args.id, "Starting server");
 
-    let server = toy_raft::Server::new(toy_raft::Config {
-        id: args.id,
-        addr: args.addr,
-    })?;
+    let server = toy_raft::Server::new(config)?;
     Ok(server.run().await?)
 }

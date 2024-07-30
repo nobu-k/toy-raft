@@ -14,6 +14,7 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["trace"] }
 hyper = "1"
 pin-project-lite = "0.2"
+url = "2"
 
 [build-dependencies]
 tonic-build = "0.12"

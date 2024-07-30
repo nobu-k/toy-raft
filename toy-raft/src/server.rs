@@ -15,6 +15,7 @@ pub struct Server {
     actor: Arc<raft::Actor>,
     log: Arc<Mutex<grpc::LogEntry>>,
 }
+
 impl Server {
     pub fn new(config: config::Config) -> Result<Server, ServerError> {
         let addrs: Vec<_> = config
