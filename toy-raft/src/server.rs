@@ -28,7 +28,7 @@ impl Server {
         }
         let addr = addrs[0];
 
-        let actor = Arc::new(raft::Actor::new());
+        let actor = Arc::new(raft::Actor::new(config.clone()));
 
         let log = Arc::new(Mutex::new(grpc::LogEntry {
             term: 0,

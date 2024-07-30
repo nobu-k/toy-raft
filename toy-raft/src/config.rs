@@ -1,5 +1,6 @@
 use std::net::ToSocketAddrs;
 
+#[derive(Debug, Clone)]
 pub struct Config {
     pub(crate) id: String,
     pub(crate) addr: String,
@@ -54,6 +55,11 @@ impl Builder {
         self
     }
 
+    pub fn peers(mut self, peers: Vec<String>) -> Self {
+        self.peers = peers;
+        self
+    }
+
     fn validate_id(&self) -> Result<(), Vec<ConfigError>> {
         if self.id.is_none() || self.id.as_ref().unwrap().is_empty() {
             Err(vec![ConfigError::MissingRequiredParameter("id".to_owned())])
@@ -86,7 +92,8 @@ impl Builder {
         // }
 
         for peer in &self.peers {
-            let _ = url::Url::parse(peer)
+            let _ = peer
+                .parse::<http::Uri>()
                 .map_err(|e| errors.push(ConfigError::InvalidPeer(peer.clone(), e)));
         }
         if errors.is_empty() {
@@ -109,7 +116,7 @@ pub enum ConfigError {
     InsufficientPeers(usize),
 
     #[error("peers must have valid URLs: {}: {}", .0, .1)]
-    InvalidPeer(String, #[source] url::ParseError),
+    InvalidPeer(String, #[source] http::uri::InvalidUri),
 }
 
 #[derive(Debug, thiserror::Error)]

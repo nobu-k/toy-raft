@@ -1,7 +1,12 @@
 use crate::grpc;
-use tracing::info;
+
+use std::sync::Arc;
+use tracing::{info, info_span, warn};
 
 pub struct Actor {
+    /// _cancel is to trigger the cancellation of the actor process when the
+    /// Actor is dropped.
+    _cancel: tokio::sync::watch::Sender<()>,
     message_queue: tokio::sync::mpsc::Sender<Message>,
 }
 
@@ -13,8 +18,21 @@ pub enum NodeState {
 }
 
 impl Actor {
-    pub fn new() -> Actor {
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
+    pub fn new(config: crate::config::Config) -> Actor {
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(());
+        let (msg_tx, msg_rx) = tokio::sync::mpsc::channel(32);
+
+        let clients: Vec<_> = config
+            .peers
+            .iter()
+            .map(|peer| {
+                // Config has already been validated.
+                peer.parse::<http::Uri>().unwrap()
+            })
+            .map(|url| tonic::transport::Channel::builder(url))
+            .map(|ch| grpc::raft_client::RaftClient::new(ch.connect_lazy()))
+            .collect();
+        let clients = Arc::new(clients);
 
         let actor = ActorProcess {
             state: ActorState {
@@ -24,11 +42,18 @@ impl Actor {
                 heartbeat_deadline: tokio::time::Instant::now()
                     + tokio::time::Duration::from_millis(150), // TODO: randomize
             },
-            rx,
+            config,
+            clients,
+            cancel: cancel_rx,
+            tx: msg_tx.clone(),
+            rx: msg_rx,
         };
         tokio::spawn(actor.run());
 
-        Actor { message_queue: tx }
+        Actor {
+            _cancel: cancel_tx,
+            message_queue: msg_tx,
+        }
     }
 
     pub async fn state(&self) -> Result<ActorState, MessageError> {
@@ -64,11 +89,18 @@ pub enum MessageError {
 struct ActorProcess {
     state: ActorState,
 
+    config: crate::config::Config,
+    clients: Arc<Vec<grpc::raft_client::RaftClient<tonic::transport::Channel>>>,
+
+    cancel: tokio::sync::watch::Receiver<()>,
+    tx: tokio::sync::mpsc::Sender<Message>,
+
     /// Receiver for messages. This channel also acts as a trigger to stop the
     /// actor (i.e. cancellation) that happens when Raft is dropped.
     rx: tokio::sync::mpsc::Receiver<Message>,
 }
 
+// TODO: rename ActorState and state because there are too many "state"s
 #[derive(Debug, Clone)]
 pub struct ActorState {
     pub current_term: u64,
@@ -83,14 +115,25 @@ enum Message {
         request: grpc::RequestVoteRequest,
         result: tokio::sync::oneshot::Sender<(ActorState, bool)>,
     },
+    VoteCompleted(VoteResult),
 }
 
 impl ActorProcess {
+    /// Main loop of the Raft actor. This actor process is canceled when the
+    /// corresponding Actor is dropped.
     pub async fn run(mut self) {
         info!("Starting Raft actor");
         loop {
-            // TODO: heartbeat timeout
+            let heartbeat_timeout = tokio::time::sleep_until(self.state.heartbeat_deadline);
             tokio::select! {
+                _ = heartbeat_timeout => {
+                    info!("Heartbeat timeout");
+                    self.request_vote();
+                },
+                _ = self.cancel.changed() => {
+                    info!("Raft actor is canceled, shutting down the Actor process");
+                    break;
+                },
                 msg = self.rx.recv() => {
                     match msg {
                         None => {
@@ -104,6 +147,12 @@ impl ActorProcess {
         }
     }
 
+    fn reset_heartbeat_timeout(&mut self) {
+        self.state.heartbeat_deadline =
+            tokio::time::Instant::now() + tokio::time::Duration::from_millis(150);
+        // TODO: randomize
+    }
+
     fn handle_message(&mut self, msg: Message) {
         match msg {
             Message::GetState(result) => {
@@ -114,7 +163,27 @@ impl ActorProcess {
                 if result.send((self.state.clone(), granted)).is_err() {
                     info!("Returning the result of GrantVote failed");
                 }
+                self.reset_heartbeat_timeout();
             }
+            Message::VoteCompleted(result) => match result {
+                VoteResult::Granted => {
+                    self.state.state = NodeState::Leader;
+                    info!(
+                        term = self.state.current_term,
+                        "Vote granted, becoming a leader"
+                    );
+
+                    // TODO: safely set an infinitely far deadline
+                    self.state.heartbeat_deadline =
+                        tokio::time::Instant::now() + tokio::time::Duration::from_secs(86400);
+                }
+                VoteResult::NotGranted(res) => {
+                    self.state.current_term = res.term;
+                    self.state.state = NodeState::Follower;
+                    info!(term = res.term, "Vote not granted, back to follower");
+                    self.reset_heartbeat_timeout();
+                }
+            },
         }
     }
 
@@ -135,4 +204,88 @@ impl ActorProcess {
         };
         true
     }
+
+    fn request_vote(&mut self) {
+        self.state.current_term += 1;
+        self.state.state = NodeState::Candidate;
+        self.reset_heartbeat_timeout();
+
+        let clients = self.clients.clone();
+        let state = self.state.clone();
+        let id = self.config.id.clone();
+        let tx = self.tx.clone();
+
+        let fut = async move {
+            // TODO: reduce the amount of logs during the election process
+            let span = info_span!("Requesting votes", term = state.current_term);
+            let _enter = span.enter();
+            info!(
+                term = state.current_term,
+                peers = clients.len(),
+                "Initiating RequestVote RPC"
+            );
+
+            let nodes = clients.len() + 1; // including self
+            let mut set = tokio::task::JoinSet::new();
+            for c in clients.iter() {
+                let mut request = tonic::Request::new(grpc::RequestVoteRequest {
+                    term: state.current_term,
+                    candidate_id: id.clone(),
+                    last_log_index: 0,
+                    last_log_term: 0,
+                });
+
+                let mut c = c.clone();
+                request.set_timeout(tokio::time::Duration::from_millis(100)); // TODO: make this configurable
+                set.spawn(async move { c.request_vote(request).await });
+            }
+
+            let mut granted = 1; // vote for self
+            while let Some(res) = set.join_next().await {
+                // TODO: select! { set.join_next(), cancel when a leader was found } // Timeout case is covered above
+                let res = match res {
+                    Ok(res) => res,
+                    Err(e) => {
+                        warn!(error = e.to_string(), "Failed to receive a vote");
+                        continue;
+                    }
+                };
+
+                match res {
+                    Ok(res) => match res.get_ref().vote_granted {
+                        true => granted += 1,
+                        false => {
+                            // Another node has a later term.
+                            if res.get_ref().term > state.current_term {
+                                let _ = tx
+                                    .send(Message::VoteCompleted(VoteResult::NotGranted(
+                                        res.into_inner(),
+                                    )))
+                                    .await;
+                                return;
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        // TODO: print status
+                        // TODO: print peer information
+                        warn!(error = e.to_string(), "The peer has failed to respond");
+                    }
+                }
+            }
+
+            if granted > nodes / 2 {
+                info!("Vote granted");
+                let _ = tx.send(Message::VoteCompleted(VoteResult::Granted)).await;
+            } else {
+                info!("Vote not granted");
+            }
+        };
+        tokio::spawn(fut);
+    }
+}
+
+enum VoteResult {
+    Granted,
+    NotGranted(grpc::RequestVoteResponse),
 }
