@@ -110,7 +110,7 @@ impl ActorProcess {
                             info!(reason = "The message channel has been closed", "Raft actor stopped");
                             break;
                         },
-                        Some(msg) => self.handle_message(msg),
+                        Some(msg) => self.handle_message(msg).await,
                     }
                 }
             }
@@ -123,13 +123,13 @@ impl ActorProcess {
         // TODO: randomize
     }
 
-    fn handle_message(&mut self, msg: Message) {
+    async fn handle_message(&mut self, msg: Message) {
         match msg {
             Message::GetState(result) => {
                 let _ = result.send(self.state.clone());
             }
             Message::GrantVote { request, result } => {
-                let granted = self.grant_vote(request);
+                let granted = self.grant_vote(request).await;
                 if result.send((self.state.clone(), granted)).is_err() {
                     info!("Returning the result of GrantVote failed");
                 }
@@ -139,19 +139,31 @@ impl ActorProcess {
         }
     }
 
-    fn grant_vote(&mut self, request: grpc::RequestVoteRequest) -> bool {
-        if request.term < self.state.current_term {
+    async fn grant_vote(&mut self, request: grpc::RequestVoteRequest) -> bool {
+        if request.term <= self.state.current_term {
             return false;
         }
 
         // TODO: check log terms
 
+        if let Some(vote) = self.vote.take() {
+            vote.cancel().await;
+        }
+
+        info!(
+            current_term = self.state.current_term,
+            new_term = request.term,
+            candidate_id = request.candidate_id,
+            "Granting vote"
+        );
+
+        self.state.current_term = request.term;
         self.state.voted_for = Some(request.candidate_id.clone());
+
         match self.state.state {
             NodeState::Follower => {}
             NodeState::Candidate | NodeState::Leader => {
                 self.state.state = NodeState::Follower;
-                self.state.voted_for = Some(request.candidate_id.clone());
             }
         };
         true
@@ -207,12 +219,14 @@ impl ActorProcess {
         self.reset_heartbeat_timeout();
 
         let vote = self.vote.take();
-        if let Some(vote) = vote {
-            info!(
-                vote_term = vote.vote_term(),
-                "Canceling the previous vote process"
-            );
-            vote.cancel().await;
+        if let Some(mut vote) = vote {
+            if vote.is_active() {
+                info!(
+                    vote_term = vote.vote_term(),
+                    "Canceling the previous vote process"
+                );
+                vote.cancel().await;
+            }
         }
         self.vote = Some(vote::Vote::start(vote::Args {
             id: self.config.id.clone(),

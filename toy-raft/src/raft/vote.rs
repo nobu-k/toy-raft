@@ -42,6 +42,13 @@ impl Vote {
         self.vote_term
     }
 
+    pub fn is_active(&mut self) -> bool {
+        match self.ack.try_recv() {
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => true,
+            _ => false,
+        }
+    }
+
     pub async fn cancel(self) {
         std::mem::drop(self.cancel);
         let _ = self.ack.await;
@@ -60,18 +67,18 @@ struct VoteProcess {
 
 impl VoteProcess {
     async fn run(mut self) {
-        let args = &self.args;
-
         // TODO: this span doesn't seem to be dropped properly
+        /*
         let span = info_span!("Requesting votes", term = args.current_term);
         let _enter = span.enter();
+        */
         info!(
-            term = args.current_term,
-            peers = args.clients.len(),
+            term = self.args.current_term,
+            peers = self.args.clients.len(),
             "Initiating RequestVote RPC",
         );
 
-        let nodes = args.clients.len() + 1; // including self
+        let nodes = self.args.clients.len() + 1; // including self
         let mut set = self.send_requests();
 
         let mut granted = 1; // vote for self
@@ -97,20 +104,22 @@ impl VoteProcess {
 
         if granted > nodes / 2 {
             info!("Vote granted");
-            // TODO: select! with cancel
-            let _ = args
+            tokio::select! {
+                _ = self
+                .args
                 .msg_queue
                 .send(Message::VoteCompleted(VoteResult::Granted {
-                    vote_term: args.current_term,
-                }))
-                .await;
+                    vote_term: self.args.current_term,
+                })) => {},
+                _ = self.cancel.changed() => {},
+            }
         } else {
             info!("Vote not granted");
         }
     }
 
     async fn vote_granted(
-        &self,
+        &mut self,
         res: Result<
             Result<tonic::Response<grpc::RequestVoteResponse>, tonic::Status>,
             tokio::task::JoinError,
@@ -131,15 +140,16 @@ impl VoteProcess {
                 let granted = res.get_ref().vote_granted;
                 if !granted {
                     if res.get_ref().term > self.args.current_term {
-                        // TODO: select! with cancel
-                        let _ = self
+                        tokio::select! {
+                            _ = self
                             .args
                             .msg_queue
                             .send(Message::VoteCompleted(VoteResult::NotGranted {
                                 vote_term: self.args.current_term,
                                 response: res.into_inner(),
-                            }))
-                            .await;
+                            })) => {},
+                            _ = self.cancel.changed() => {},
+                        };
                     }
                 }
                 granted
