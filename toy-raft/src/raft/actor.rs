@@ -1,20 +1,14 @@
-use crate::grpc;
+use crate::{grpc, raft::vote};
 
+use super::message::*;
 use std::sync::Arc;
-use tracing::{info, info_span, warn};
+use tracing::{info, info_span, trace, warn};
 
 pub struct Actor {
     /// _cancel is to trigger the cancellation of the actor process when the
     /// Actor is dropped.
     _cancel: tokio::sync::watch::Sender<()>,
     message_queue: tokio::sync::mpsc::Sender<Message>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum NodeState {
-    Follower,
-    Candidate,
-    Leader,
 }
 
 impl Actor {
@@ -44,6 +38,7 @@ impl Actor {
             },
             config,
             clients,
+            vote: None,
             cancel: cancel_rx,
             tx: msg_tx.clone(),
             rx: msg_rx,
@@ -77,20 +72,13 @@ impl Actor {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum MessageError {
-    #[error("failed to send a message: {0}")]
-    SendError(#[from] tokio::sync::mpsc::error::SendError<Message>),
-
-    #[error("failed to receive a message: {0}")]
-    ReceiveError(#[from] tokio::sync::oneshot::error::RecvError),
-}
-
 struct ActorProcess {
     state: ActorState,
 
     config: crate::config::Config,
     clients: Arc<Vec<grpc::raft_client::RaftClient<tonic::transport::Channel>>>,
+
+    vote: Option<vote::Vote>,
 
     cancel: tokio::sync::watch::Receiver<()>,
     tx: tokio::sync::mpsc::Sender<Message>,
@@ -98,24 +86,6 @@ struct ActorProcess {
     /// Receiver for messages. This channel also acts as a trigger to stop the
     /// actor (i.e. cancellation) that happens when Raft is dropped.
     rx: tokio::sync::mpsc::Receiver<Message>,
-}
-
-// TODO: rename ActorState and state because there are too many "state"s
-#[derive(Debug, Clone)]
-pub struct ActorState {
-    pub current_term: u64,
-    pub voted_for: Option<String>,
-    pub state: NodeState,
-    pub heartbeat_deadline: tokio::time::Instant,
-}
-
-enum Message {
-    GetState(tokio::sync::oneshot::Sender<ActorState>),
-    GrantVote {
-        request: grpc::RequestVoteRequest,
-        result: tokio::sync::oneshot::Sender<(ActorState, bool)>,
-    },
-    VoteCompleted(VoteResult),
 }
 
 impl ActorProcess {
@@ -128,7 +98,7 @@ impl ActorProcess {
             tokio::select! {
                 _ = heartbeat_timeout => {
                     info!("Heartbeat timeout");
-                    self.request_vote();
+                    self.request_vote().await;
                 },
                 _ = self.cancel.changed() => {
                     info!("Raft actor is canceled, shutting down the Actor process");
@@ -165,25 +135,7 @@ impl ActorProcess {
                 }
                 self.reset_heartbeat_timeout();
             }
-            Message::VoteCompleted(result) => match result {
-                VoteResult::Granted => {
-                    self.state.state = NodeState::Leader;
-                    info!(
-                        term = self.state.current_term,
-                        "Vote granted, becoming a leader"
-                    );
-
-                    // TODO: safely set an infinitely far deadline
-                    self.state.heartbeat_deadline =
-                        tokio::time::Instant::now() + tokio::time::Duration::from_secs(86400);
-                }
-                VoteResult::NotGranted(res) => {
-                    self.state.current_term = res.term;
-                    self.state.state = NodeState::Follower;
-                    info!(term = res.term, "Vote not granted, back to follower");
-                    self.reset_heartbeat_timeout();
-                }
-            },
+            Message::VoteCompleted(res) => self.vote_completed(res),
         }
     }
 
@@ -205,87 +157,68 @@ impl ActorProcess {
         true
     }
 
-    fn request_vote(&mut self) {
+    fn vote_completed(&mut self, res: VoteResult) {
+        let ignore_old = |vote_term| {
+            if vote_term != self.state.current_term {
+                trace!(
+                    current_term = self.state.current_term,
+                    vote_term,
+                    "Ignoring the old vote result"
+                );
+                return true;
+            }
+            false
+        };
+
+        match res {
+            VoteResult::Granted { vote_term } => {
+                if ignore_old(vote_term) {
+                    return;
+                }
+                self.state.state = NodeState::Leader;
+                info!(
+                    term = self.state.current_term,
+                    "Vote granted, becoming a leader"
+                );
+
+                // TODO: safely set an infinitely far deadline
+                self.state.heartbeat_deadline =
+                    tokio::time::Instant::now() + tokio::time::Duration::from_secs(86400);
+            }
+            VoteResult::NotGranted {
+                vote_term,
+                response: res,
+            } => {
+                if ignore_old(vote_term) {
+                    return;
+                }
+
+                self.state.current_term = res.term;
+                self.state.state = NodeState::Follower;
+                info!(term = res.term, "Vote not granted, back to follower");
+                self.reset_heartbeat_timeout();
+            }
+        }
+    }
+
+    async fn request_vote(&mut self) {
         self.state.current_term += 1;
         self.state.state = NodeState::Candidate;
         self.reset_heartbeat_timeout();
 
-        let clients = self.clients.clone();
-        let state = self.state.clone();
-        let id = self.config.id.clone();
-        let tx = self.tx.clone();
-
-        let fut = async move {
-            // TODO: reduce the amount of logs during the election process
-            let span = info_span!("Requesting votes", term = state.current_term);
-            let _enter = span.enter();
+        let vote = self.vote.take();
+        if let Some(vote) = vote {
             info!(
-                term = state.current_term,
-                peers = clients.len(),
-                "Initiating RequestVote RPC"
+                vote_term = vote.vote_term(),
+                "Canceling the previous vote process"
             );
-
-            let nodes = clients.len() + 1; // including self
-            let mut set = tokio::task::JoinSet::new();
-            for c in clients.iter() {
-                let mut request = tonic::Request::new(grpc::RequestVoteRequest {
-                    term: state.current_term,
-                    candidate_id: id.clone(),
-                    last_log_index: 0,
-                    last_log_term: 0,
-                });
-
-                let mut c = c.clone();
-                request.set_timeout(tokio::time::Duration::from_millis(100)); // TODO: make this configurable
-                set.spawn(async move { c.request_vote(request).await });
-            }
-
-            let mut granted = 1; // vote for self
-            while let Some(res) = set.join_next().await {
-                // TODO: select! { set.join_next(), cancel when a leader was found } // Timeout case is covered above
-                let res = match res {
-                    Ok(res) => res,
-                    Err(e) => {
-                        warn!(error = e.to_string(), "Failed to receive a vote");
-                        continue;
-                    }
-                };
-
-                match res {
-                    Ok(res) => match res.get_ref().vote_granted {
-                        true => granted += 1,
-                        false => {
-                            // Another node has a later term.
-                            if res.get_ref().term > state.current_term {
-                                let _ = tx
-                                    .send(Message::VoteCompleted(VoteResult::NotGranted(
-                                        res.into_inner(),
-                                    )))
-                                    .await;
-                                return;
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        // TODO: print status
-                        // TODO: print peer information
-                        warn!(error = e.to_string(), "The peer has failed to respond");
-                    }
-                }
-            }
-
-            if granted > nodes / 2 {
-                info!("Vote granted");
-                let _ = tx.send(Message::VoteCompleted(VoteResult::Granted)).await;
-            } else {
-                info!("Vote not granted");
-            }
-        };
-        tokio::spawn(fut);
+            vote.cancel().await;
+        }
+        self.vote = Some(vote::Vote::start(vote::Args {
+            id: self.config.id.clone(),
+            current_term: self.state.current_term,
+            msg_queue: self.tx.clone(),
+            clients: self.clients.clone(),
+        }));
     }
-}
-
-enum VoteResult {
-    Granted,
-    NotGranted(grpc::RequestVoteResponse),
 }
