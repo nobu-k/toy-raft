@@ -18,11 +18,18 @@ pub struct ActorState {
 
 pub enum Message {
     GetState(tokio::sync::oneshot::Sender<ActorState>),
+    AppendEntries {
+        request: grpc::AppendEntriesRequest,
+        result: tokio::sync::oneshot::Sender<grpc::AppendEntriesResponse>,
+    },
     GrantVote {
         request: grpc::RequestVoteRequest,
         result: tokio::sync::oneshot::Sender<(ActorState, bool)>,
     },
     VoteCompleted(VoteResult),
+    BackToFollower {
+        term: u64,
+    },
 }
 
 pub enum VoteResult {

@@ -89,7 +89,13 @@ impl grpc::raft_server::Raft for Arc<Server> {
         &self,
         request: tonic::Request<grpc::AppendEntriesRequest>,
     ) -> Result<tonic::Response<grpc::AppendEntriesResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("Not implemented"))
+        let msg = request.into_inner();
+        let res = self
+            .actor
+            .append_entries(msg)
+            .await
+            .map_err(|e| tonic::Status::internal(format!("Internal error: {}", e)))?;
+        Ok(tonic::Response::new(res))
     }
 
     async fn request_vote(

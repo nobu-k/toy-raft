@@ -1,8 +1,8 @@
-use crate::{grpc, raft::vote};
+use crate::grpc;
 
-use super::message::*;
+use super::{leader, message::*, vote};
 use std::sync::Arc;
-use tracing::{info, info_span, trace, warn};
+use tracing::{info, trace};
 
 pub struct Actor {
     /// _cancel is to trigger the cancellation of the actor process when the
@@ -38,6 +38,7 @@ impl Actor {
             },
             config,
             clients,
+            leader: None,
             vote: None,
             cancel: cancel_rx,
             tx: msg_tx.clone(),
@@ -54,6 +55,20 @@ impl Actor {
     pub async fn state(&self) -> Result<ActorState, MessageError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.message_queue.send(Message::GetState(tx)).await?;
+        Ok(rx.await?)
+    }
+
+    pub async fn append_entries(
+        &self,
+        msg: grpc::AppendEntriesRequest,
+    ) -> Result<grpc::AppendEntriesResponse, MessageError> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.message_queue
+            .send(Message::AppendEntries {
+                request: msg,
+                result: tx,
+            })
+            .await?;
         Ok(rx.await?)
     }
 
@@ -76,8 +91,11 @@ struct ActorProcess {
     state: ActorState,
 
     config: crate::config::Config,
+
+    // TODO: rename this to peers. A peer should be a struct that contains the ID and gRPC client.
     clients: Arc<Vec<grpc::raft_client::RaftClient<tonic::transport::Channel>>>,
 
+    leader: Option<leader::Leader>,
     vote: Option<vote::Vote>,
 
     cancel: tokio::sync::watch::Receiver<()>,
@@ -128,6 +146,12 @@ impl ActorProcess {
             Message::GetState(result) => {
                 let _ = result.send(self.state.clone());
             }
+            Message::AppendEntries { request, result } => {
+                let response = self.append_entries(request);
+                if result.send(response).is_err() {
+                    info!("Returning the result of AppendEntries failed");
+                }
+            }
             Message::GrantVote { request, result } => {
                 let granted = self.grant_vote(request).await;
                 if result.send((self.state.clone(), granted)).is_err() {
@@ -136,7 +160,42 @@ impl ActorProcess {
                 self.reset_heartbeat_timeout();
             }
             Message::VoteCompleted(res) => self.vote_completed(res),
+            Message::BackToFollower { term } => self.back_to_follower(term),
         }
+    }
+
+    fn append_entries(
+        &mut self,
+        request: grpc::AppendEntriesRequest,
+    ) -> grpc::AppendEntriesResponse {
+        if request.term < self.state.current_term {
+            return grpc::AppendEntriesResponse {
+                term: self.state.current_term,
+                success: false,
+            };
+        }
+
+        match self.state.state {
+            NodeState::Follower => {
+                // TODO: check the content of request to support non-heartbeat messages.
+                self.state.current_term = request.term;
+                self.reset_heartbeat_timeout();
+                return grpc::AppendEntriesResponse {
+                    term: self.state.current_term,
+                    success: true,
+                };
+            }
+            NodeState::Candidate | NodeState::Leader => {
+                self.back_to_follower(request.term);
+
+                // TODO: returning this response can result in unnecessary AppendEntries with older index IDs.
+                // So, the same process as the follower should be done here.
+                return grpc::AppendEntriesResponse {
+                    term: self.state.current_term,
+                    success: false,
+                };
+            }
+        };
     }
 
     async fn grant_vote(&mut self, request: grpc::RequestVoteRequest) -> bool {
@@ -149,6 +208,7 @@ impl ActorProcess {
         if let Some(vote) = self.vote.take() {
             vote.cancel().await;
         }
+        self.leader.take();
 
         info!(
             current_term = self.state.current_term,
@@ -196,6 +256,13 @@ impl ActorProcess {
                 // TODO: safely set an infinitely far deadline
                 self.state.heartbeat_deadline =
                     tokio::time::Instant::now() + tokio::time::Duration::from_secs(86400);
+
+                self.leader = Some(leader::Leader::start(leader::Args {
+                    id: self.config.id.clone(),
+                    current_term: self.state.current_term,
+                    msg_queue: self.tx.clone(),
+                    clients: self.clients.clone(),
+                }));
             }
             VoteResult::NotGranted {
                 vote_term,
@@ -207,7 +274,7 @@ impl ActorProcess {
 
                 self.state.current_term = res.term;
                 self.state.state = NodeState::Follower;
-                info!(term = res.term, "Vote not granted, back to follower");
+                info!(term = res.term, "Vote not granted, back to a follower");
                 self.reset_heartbeat_timeout();
             }
         }
@@ -234,5 +301,19 @@ impl ActorProcess {
             msg_queue: self.tx.clone(),
             clients: self.clients.clone(),
         }));
+    }
+
+    fn back_to_follower(&mut self, term: u64) {
+        if term <= self.state.current_term {
+            return;
+        }
+
+        // TODO: should probably await here to ensure the old process exits.
+        self.vote.take();
+        self.leader.take();
+
+        self.state.current_term = term;
+        self.state.state = NodeState::Follower;
+        self.reset_heartbeat_timeout();
     }
 }
