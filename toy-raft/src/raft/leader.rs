@@ -88,10 +88,7 @@ impl LeaderProcess {
         let res = match res {
             Ok(res) => res,
             Err(e) => {
-                warn!(
-                    error = e.to_string(),
-                    "Failed to receive a heartbeat response"
-                );
+                warn!(error = e.to_string(), "Failed to join heartbeat responses");
                 return;
             }
         };
@@ -100,10 +97,7 @@ impl LeaderProcess {
             Ok(res) => res,
             Err(e) => {
                 // TODO: add peer information
-                warn!(
-                    error = e.to_string(),
-                    "Failed to receive a heartbeat response"
-                );
+                super::metrics::inc_peer_receive_failure("TODO", e.code());
                 return;
             }
         };

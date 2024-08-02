@@ -1,5 +1,5 @@
 use super::message::*;
-use crate::grpc;
+use crate::{grpc, raft::metrics};
 use std::sync::Arc;
 use tracing::{info, info_span, warn};
 
@@ -125,12 +125,10 @@ impl VoteProcess {
             tokio::task::JoinError,
         >,
     ) -> bool {
-        // TODO: log which peer has failed.
-
         let res = match res {
             Ok(res) => res,
             Err(e) => {
-                warn!(error = e.to_string(), "Failed to receive a vote");
+                warn!(error = e.to_string(), "Failed to join vote responses");
                 return false;
             }
         };
@@ -155,9 +153,8 @@ impl VoteProcess {
                 granted
             }
             Err(e) => {
-                // TODO: print status
-                // TODO: print peer information
-                warn!(error = e.to_string(), "The peer has failed to respond");
+                // TODO: add peer information
+                metrics::inc_peer_receive_failure("TODO", e.code());
                 false
             }
         }
