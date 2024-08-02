@@ -1,6 +1,7 @@
 use crate::grpc;
 
 use super::{leader, message::*, vote};
+use rand::{Rng, SeedableRng};
 use std::sync::Arc;
 use tracing::{info, trace};
 
@@ -38,6 +39,7 @@ impl Actor {
             },
             config,
             clients,
+            rng: rand::rngs::StdRng::from_entropy(),
             leader: None,
             vote: None,
             cancel: cancel_rx,
@@ -95,6 +97,9 @@ struct ActorProcess {
     // TODO: rename this to peers. A peer should be a struct that contains the ID and gRPC client.
     clients: Arc<Vec<grpc::raft_client::RaftClient<tonic::transport::Channel>>>,
 
+    /// Used to variate the heartbeat timeout.
+    rng: rand::rngs::StdRng,
+
     leader: Option<leader::Leader>,
     vote: Option<vote::Vote>,
 
@@ -136,9 +141,9 @@ impl ActorProcess {
     }
 
     fn reset_heartbeat_timeout(&mut self) {
+        let jitter: u64 = self.rng.gen_range(0..150);
         self.state.heartbeat_deadline =
-            tokio::time::Instant::now() + tokio::time::Duration::from_millis(150);
-        // TODO: randomize
+            tokio::time::Instant::now() + tokio::time::Duration::from_millis(150 + jitter);
     }
 
     async fn handle_message(&mut self, msg: Message) {

@@ -1272,6 +1272,7 @@ dependencies = [
  "pin-project-lite",
  "prometheus",
  "prost",
+ "rand",
  "thiserror",
  "tokio",
  "tonic",
