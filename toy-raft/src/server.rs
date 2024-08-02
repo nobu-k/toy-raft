@@ -4,9 +4,8 @@ use std::{
 };
 
 use tokio::sync::Mutex;
-use tower::Layer;
 use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
-use tracing::{error, info, info_span};
+use tracing::{error, info_span};
 
 use crate::{config, grpc, raft};
 
@@ -81,7 +80,10 @@ impl Server {
             .await
         {
             Ok(_) => Ok(()),
-            Err(_) => return Err(ServerError::InternalError),
+            Err(e) => {
+                error!(error = e.to_string(), "Failed to serve");
+                Err(e.into())
+            }
         }
     }
 }
@@ -90,6 +92,9 @@ impl Server {
 pub enum ServerError {
     #[error("internal error")]
     InternalError,
+
+    #[error("tonic server failed: {0}")]
+    TonicServeError(#[from] tonic::transport::Error),
 
     #[error("invalid address: {}", .0)]
     InvalidAddress(#[source] Arc<dyn std::error::Error + Sync + Send + 'static>),
