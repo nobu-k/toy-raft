@@ -1,4 +1,20 @@
 use crate::grpc;
+use std::sync::Arc;
+
+pub type PeerJoinSet<R> = tokio::task::JoinSet<PeerJoinResponse<R>>;
+pub type PeerJoinResult<R> = Result<PeerJoinResponse<R>, tokio::task::JoinError>;
+
+pub struct PeerJoinResponse<R> {
+    pub id: Arc<String>,
+    pub result: Result<tonic::Response<R>, tonic::Status>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PeerClient {
+    // id is Arc to reduce unnecessary cloning.
+    pub id: Arc<String>,
+    pub client: grpc::raft_client::RaftClient<tonic::transport::Channel>,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum NodeState {

@@ -1,7 +1,7 @@
 use tracing::warn;
 
 use super::message::*;
-use crate::grpc;
+use crate::{grpc, Peer};
 use std::sync::Arc;
 
 pub struct Leader {
@@ -12,7 +12,7 @@ pub struct Leader {
 pub struct Args {
     pub id: String,
     pub current_term: u64,
-    pub clients: Arc<Vec<grpc::raft_client::RaftClient<tonic::transport::Channel>>>,
+    pub peers: Arc<Vec<PeerClient>>,
     pub msg_queue: tokio::sync::mpsc::Sender<Message>,
 }
 
@@ -50,7 +50,7 @@ impl LeaderProcess {
 
     async fn send_heartbeat(&mut self) {
         let mut set = tokio::task::JoinSet::new();
-        for c in self.args.clients.iter() {
+        for p in self.args.peers.iter() {
             let mut request = tonic::Request::new(grpc::AppendEntriesRequest {
                 leader_id: self.args.id.clone(),
                 term: self.args.current_term,
@@ -60,10 +60,12 @@ impl LeaderProcess {
             });
             request.set_timeout(tokio::time::Duration::from_millis(50)); // TODO: customize
 
-            let mut c = c.clone();
+            let mut p = p.clone();
             set.spawn(async move {
-                // TODO: return the client information together with the response.
-                c.append_entries(request).await
+                PeerJoinResponse {
+                    id: p.id,
+                    result: p.client.append_entries(request).await,
+                }
             });
         }
 
@@ -80,12 +82,9 @@ impl LeaderProcess {
 
     async fn handle_heartbeat_response(
         &mut self,
-        res: Result<
-            Result<tonic::Response<grpc::AppendEntriesResponse>, tonic::Status>,
-            tokio::task::JoinError,
-        >,
+        res: PeerJoinResult<grpc::AppendEntriesResponse>,
     ) {
-        let res = match res {
+        let join_result = match res {
             Ok(res) => res,
             Err(e) => {
                 warn!(error = e.to_string(), "Failed to join heartbeat responses");
@@ -93,11 +92,10 @@ impl LeaderProcess {
             }
         };
 
-        let res = match res {
+        let res = match join_result.result {
             Ok(res) => res,
             Err(e) => {
-                // TODO: add peer information
-                super::metrics::inc_peer_receive_failure("TODO", e.code());
+                super::metrics::inc_peer_receive_failure(&join_result.id, e.code());
                 return;
             }
         };

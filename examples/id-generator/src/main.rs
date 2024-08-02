@@ -12,6 +12,7 @@ struct Args {
     id: String,
 
     /// Address to bind to.
+    #[arg(long, env = "TOY_RAFT_SERVER_ADDR")]
     addr: String,
 }
 

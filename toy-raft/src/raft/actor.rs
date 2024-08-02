@@ -17,17 +17,21 @@ impl Actor {
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(());
         let (msg_tx, msg_rx) = tokio::sync::mpsc::channel(32);
 
-        let clients: Vec<_> = config
+        let peers: Vec<_> = config
             .peers
             .iter()
             .map(|peer| {
                 // Config has already been validated.
-                peer.addr.parse::<http::Uri>().unwrap()
+                let url = peer.addr.parse::<http::Uri>().unwrap();
+                PeerClient {
+                    id: Arc::new(peer.id.clone()),
+                    client: grpc::raft_client::RaftClient::new(
+                        tonic::transport::Channel::builder(url).connect_lazy(),
+                    ),
+                }
             })
-            .map(|url| tonic::transport::Channel::builder(url))
-            .map(|ch| grpc::raft_client::RaftClient::new(ch.connect_lazy()))
             .collect();
-        let clients = Arc::new(clients);
+        let peers = Arc::new(peers);
 
         let actor = ActorProcess {
             state: ActorState {
@@ -38,7 +42,7 @@ impl Actor {
                     + tokio::time::Duration::from_millis(150), // TODO: randomize
             },
             config,
-            clients,
+            peers,
             rng: rand::rngs::StdRng::from_entropy(),
             leader: None,
             vote: None,
@@ -95,7 +99,7 @@ struct ActorProcess {
     config: crate::config::Config,
 
     // TODO: rename this to peers. A peer should be a struct that contains the ID and gRPC client.
-    clients: Arc<Vec<grpc::raft_client::RaftClient<tonic::transport::Channel>>>,
+    peers: Arc<Vec<PeerClient>>,
 
     /// Used to variate the heartbeat timeout.
     rng: rand::rngs::StdRng,
@@ -111,11 +115,6 @@ struct ActorProcess {
     rx: tokio::sync::mpsc::Receiver<Message>,
 }
 
-struct PeerClient {
-    id: String,
-    client: grpc::raft_client::RaftClient<tonic::transport::Channel>,
-}
-
 impl ActorProcess {
     /// Main loop of the Raft actor. This actor process is canceled when the
     /// corresponding Actor is dropped.
@@ -125,6 +124,9 @@ impl ActorProcess {
             let heartbeat_timeout = tokio::time::sleep_until(self.state.heartbeat_deadline);
             tokio::select! {
                 _ = heartbeat_timeout => {
+                    // TODO: suppress this log right after the startup because
+                    // other nodes haven't started up yet, either, and a lot of
+                    // this log are written.
                     info!("Heartbeat timeout");
                     self.request_vote().await;
                 },
@@ -271,7 +273,7 @@ impl ActorProcess {
                     id: self.config.id.clone(),
                     current_term: self.state.current_term,
                     msg_queue: self.tx.clone(),
-                    clients: self.clients.clone(),
+                    peers: self.peers.clone(),
                 }));
             }
             VoteResult::NotGranted {
@@ -309,7 +311,7 @@ impl ActorProcess {
             id: self.config.id.clone(),
             current_term: self.state.current_term,
             msg_queue: self.tx.clone(),
-            clients: self.clients.clone(),
+            peers: self.peers.clone(),
         }));
     }
 

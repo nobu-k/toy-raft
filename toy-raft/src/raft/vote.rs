@@ -13,7 +13,7 @@ pub struct Args {
     pub id: String,
     pub current_term: u64,
     pub msg_queue: tokio::sync::mpsc::Sender<Message>,
-    pub clients: Arc<Vec<grpc::raft_client::RaftClient<tonic::transport::Channel>>>,
+    pub peers: Arc<Vec<PeerClient>>,
 }
 
 impl Vote {
@@ -74,11 +74,11 @@ impl VoteProcess {
         */
         info!(
             term = self.args.current_term,
-            peers = self.args.clients.len(),
+            peers = self.args.peers.len(),
             "Initiating RequestVote RPC",
         );
 
-        let nodes = self.args.clients.len() + 1; // including self
+        let nodes = self.args.peers.len() + 1; // including self
         let mut set = self.send_requests();
 
         let mut granted = 1; // vote for self
@@ -105,7 +105,7 @@ impl VoteProcess {
         if granted > nodes / 2 {
             info!(
                 term = self.args.current_term,
-                peers = self.args.clients.len(),
+                peers = self.args.peers.len(),
                 vote_granted = granted,
                 "Vote granted"
             );
@@ -121,21 +121,15 @@ impl VoteProcess {
         } else {
             info!(
                 term = self.args.current_term,
-                peers = self.args.clients.len(),
+                peers = self.args.peers.len(),
                 vote_granted = granted,
                 "Vote not granted"
             );
         }
     }
 
-    async fn vote_granted(
-        &mut self,
-        res: Result<
-            Result<tonic::Response<grpc::RequestVoteResponse>, tonic::Status>,
-            tokio::task::JoinError,
-        >,
-    ) -> bool {
-        let res = match res {
+    async fn vote_granted(&mut self, res: PeerJoinResult<grpc::RequestVoteResponse>) -> bool {
+        let join_result = match res {
             Ok(res) => res,
             Err(e) => {
                 warn!(error = e.to_string(), "Failed to join vote responses");
@@ -143,7 +137,7 @@ impl VoteProcess {
             }
         };
 
-        match res {
+        match join_result.result {
             Ok(res) => {
                 let granted = res.get_ref().vote_granted;
                 if !granted {
@@ -163,21 +157,17 @@ impl VoteProcess {
                 granted
             }
             Err(e) => {
-                // TODO: add peer information
-                metrics::inc_peer_receive_failure("TODO", e.code());
+                metrics::inc_peer_receive_failure(&join_result.id, e.code());
                 false
             }
         }
     }
 
-    fn send_requests(
-        &self,
-    ) -> tokio::task::JoinSet<Result<tonic::Response<grpc::RequestVoteResponse>, tonic::Status>>
-    {
+    fn send_requests(&self) -> PeerJoinSet<grpc::RequestVoteResponse> {
         let args = &self.args;
 
         let mut set = tokio::task::JoinSet::new();
-        for c in args.clients.iter() {
+        for p in args.peers.iter() {
             let mut request = tonic::Request::new(grpc::RequestVoteRequest {
                 term: args.current_term,
                 candidate_id: args.id.clone(),
@@ -185,9 +175,14 @@ impl VoteProcess {
                 last_log_term: 0,
             });
 
-            let mut c = c.clone();
+            let mut p = p.clone();
             request.set_timeout(tokio::time::Duration::from_millis(100)); // TODO: make this configurable
-            set.spawn(async move { c.request_vote(request).await });
+            set.spawn(async move {
+                PeerJoinResponse {
+                    id: p.id,
+                    result: p.client.request_vote(request).await,
+                }
+            });
         }
 
         set
