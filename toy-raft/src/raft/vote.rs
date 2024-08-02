@@ -103,7 +103,12 @@ impl VoteProcess {
         }
 
         if granted > nodes / 2 {
-            info!("Vote granted");
+            info!(
+                term = self.args.current_term,
+                peers = self.args.clients.len(),
+                vote_granted = granted,
+                "Vote granted"
+            );
             tokio::select! {
                 _ = self
                 .args
@@ -114,7 +119,12 @@ impl VoteProcess {
                 _ = self.cancel.changed() => {},
             }
         } else {
-            info!("Vote not granted");
+            info!(
+                term = self.args.current_term,
+                peers = self.args.clients.len(),
+                vote_granted = granted,
+                "Vote not granted"
+            );
         }
     }
 

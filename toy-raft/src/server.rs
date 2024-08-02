@@ -4,6 +4,7 @@ use std::{
 };
 
 use tokio::sync::Mutex;
+use tower::Layer;
 use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
 use tracing::{error, info, info_span};
 
@@ -47,21 +48,35 @@ impl Server {
         let server = Arc::new(self);
         let id = server.id.clone();
 
+        let operations_service = tower::ServiceBuilder::new()
+            .layer(
+                TraceLayer::new_for_grpc()
+                    .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
+                    .on_failure(DefaultOnFailure::new().level(tracing::Level::INFO)),
+            )
+            .service(grpc::operations_server::OperationsServer::new(
+                server.clone(),
+            ))
+            .into_inner();
+
+        let raft_service = tower::ServiceBuilder::new()
+            .layer(
+                TraceLayer::new_for_grpc()
+                    // Set this to TRACE as it's too verbose.
+                    .on_response(DefaultOnResponse::new().level(tracing::Level::TRACE))
+                    .on_failure(DefaultOnFailure::new().level(tracing::Level::INFO)),
+            )
+            .service(grpc::raft_server::RaftServer::new(server.clone()))
+            .into_inner();
+
         match tonic::transport::Server::builder()
             .trace_fn(move |request| {
                 let path = request.uri().path().to_owned();
                 let method = request.method().to_string();
                 info_span!("toy_raft_server", id, method, path)
             })
-            .layer(
-                TraceLayer::new_for_grpc()
-                    .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
-                    .on_failure(DefaultOnFailure::new().level(tracing::Level::INFO)),
-            )
-            .add_service(grpc::raft_server::RaftServer::new(server.clone()))
-            .add_service(grpc::operations_server::OperationsServer::new(
-                server.clone(),
-            ))
+            .add_service(raft_service)
+            .add_service(operations_service)
             .serve(addr)
             .await
         {
