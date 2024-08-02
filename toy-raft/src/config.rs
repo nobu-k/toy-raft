@@ -4,13 +4,13 @@ use std::net::ToSocketAddrs;
 pub struct Config {
     pub(crate) id: String,
     pub(crate) addr: String,
-    pub(crate) peers: Vec<String>,
+    pub(crate) peers: Vec<Peer>,
 }
 
 pub struct Builder {
     id: Option<String>,
     addr: Option<String>,
-    peers: Vec<String>,
+    peers: Vec<Peer>,
 }
 
 impl Config {
@@ -23,8 +23,67 @@ impl Config {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Peer {
+    pub id: String,
+    pub addr: String,
+}
+
+impl Peer {
+    /// Parse a peer string into a Peer struct. The format must be
+    /// `<id>@<addr>`.
+    pub fn parse(peer: String) -> Result<Peer, ConfigError> {
+        let mut parts = peer.splitn(2, '@');
+        let id = parts
+            .next()
+            .ok_or(ConfigError::InvalidPeerFormat(peer.clone()))?
+            .to_owned();
+        let addr = parts
+            .next()
+            .ok_or(ConfigError::InvalidPeerFormat(peer.clone()))?
+            .to_owned();
+        Ok(Peer { id, addr })
+    }
+
+    /// Parse args parses the peer strings into Peer structs. The values can
+    /// contain comma-separated list of peers in `<id>@<addr>` format.
+    pub fn parse_args<'a, S, T>(peers: &'a S) -> Result<Vec<Peer>, ConfigErrors>
+    where
+        S: std::convert::AsRef<[T]>,
+        T: std::convert::AsRef<str>,
+    {
+        let mut errors = vec![];
+        let res = peers
+            .as_ref()
+            .iter()
+            .flat_map(|p| p.as_ref().split(','))
+            .filter_map(|p| match Self::parse(p.to_owned()) {
+                Ok(peer) => Some(peer),
+                Err(e) => {
+                    errors.push(e);
+                    None
+                }
+            })
+            .collect();
+
+        if errors.is_empty() {
+            Ok(res)
+        } else {
+            Err(ConfigErrors { errors })
+        }
+    }
+}
+
 impl Builder {
-    pub fn build(self) -> Result<Config, ConfigErrors> {
+    pub fn build(mut self) -> Result<Config, ConfigErrors> {
+        // For smooth integration with StatefulSet, peer can contain the
+        // current server. It's excluded from the list.
+        self.peers = if let Some(id) = self.id.as_ref() {
+            self.peers.into_iter().filter(|p| p.id != *id).collect()
+        } else {
+            self.peers
+        };
+
         let errors: Vec<ConfigError> = [
             self.validate_id(),
             self.validate_addr(),
@@ -55,7 +114,8 @@ impl Builder {
         self
     }
 
-    pub fn peers(mut self, peers: Vec<String>) -> Self {
+    /// Set the list of peers. The list can contain the current server.
+    pub fn peers(mut self, peers: Vec<Peer>) -> Self {
         self.peers = peers;
         self
     }
@@ -92,9 +152,11 @@ impl Builder {
         // }
 
         for peer in &self.peers {
+            // TODO: validate the peer ID
             let _ = peer
+                .addr
                 .parse::<http::Uri>()
-                .map_err(|e| errors.push(ConfigError::InvalidPeer(peer.clone(), e)));
+                .map_err(|e| errors.push(ConfigError::InvalidPeerAddr(peer.addr.clone(), e)));
         }
         if errors.is_empty() {
             Ok(())
@@ -109,6 +171,9 @@ pub enum ConfigError {
     #[error("missing required parameter: {}", .0)]
     MissingRequiredParameter(String),
 
+    #[error("invalid peer format (must be <id>@<addr>): {0}")]
+    InvalidPeerFormat(String),
+
     #[error("invalid address: {}, {}", .0, .1)]
     InvalidAddress(String, #[source] std::io::Error),
 
@@ -116,7 +181,7 @@ pub enum ConfigError {
     InsufficientPeers(usize),
 
     #[error("peers must have valid URLs: {}: {}", .0, .1)]
-    InvalidPeer(String, #[source] http::uri::InvalidUri),
+    InvalidPeerAddr(String, #[source] http::uri::InvalidUri),
 }
 
 #[derive(Debug, thiserror::Error)]

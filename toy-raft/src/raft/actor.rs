@@ -22,7 +22,7 @@ impl Actor {
             .iter()
             .map(|peer| {
                 // Config has already been validated.
-                peer.parse::<http::Uri>().unwrap()
+                peer.addr.parse::<http::Uri>().unwrap()
             })
             .map(|url| tonic::transport::Channel::builder(url))
             .map(|ch| grpc::raft_client::RaftClient::new(ch.connect_lazy()))
@@ -109,6 +109,11 @@ struct ActorProcess {
     /// Receiver for messages. This channel also acts as a trigger to stop the
     /// actor (i.e. cancellation) that happens when Raft is dropped.
     rx: tokio::sync::mpsc::Receiver<Message>,
+}
+
+struct PeerClient {
+    id: String,
+    client: grpc::raft_client::RaftClient<tonic::transport::Channel>,
 }
 
 impl ActorProcess {
