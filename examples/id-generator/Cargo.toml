@@ -10,5 +10,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+hyper = { version = "1", features = ["full"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["full"] }
+prometheus = "0.13"
 
 toy-raft = { path = "../../toy-raft" }

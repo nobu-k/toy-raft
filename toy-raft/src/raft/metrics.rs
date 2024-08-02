@@ -1,7 +1,7 @@
 use std::borrow::Borrow;
 
 use once_cell::sync::Lazy;
-use prometheus::{IntCounterVec, Opts};
+use prometheus::{register_int_counter_vec, IntCounterVec, Opts};
 
 const NAMESPACE: &str = "toy_raft";
 
@@ -12,7 +12,7 @@ static PEER_RECEIVE_FAILURE: Lazy<IntCounterVec> = Lazy::new(|| {
     )
     .namespace(NAMESPACE);
 
-    IntCounterVec::new(opts, &["peer", "status"]).unwrap()
+    register_int_counter_vec!(opts, &["peer", "status"]).unwrap()
 });
 
 pub fn inc_peer_receive_failure(peer: &str, status: tonic::Code) {
