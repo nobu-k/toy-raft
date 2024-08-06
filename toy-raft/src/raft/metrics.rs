@@ -1,7 +1,7 @@
 use std::borrow::Borrow;
 
 use once_cell::sync::Lazy;
-use prometheus::{register_int_counter_vec, IntCounterVec, Opts};
+use prometheus::{register_int_counter_vec, IntCounterVec, IntGaugeVec, Opts};
 
 const NAMESPACE: &str = "toy_raft";
 
