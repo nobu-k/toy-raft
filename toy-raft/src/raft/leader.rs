@@ -1,4 +1,4 @@
-use tracing::warn;
+use tracing::{error, warn};
 
 use super::message::*;
 use crate::{grpc, Peer};
@@ -25,7 +25,7 @@ impl Leader {
                 leader_id: args.id.clone(),
                 current_term: args.current_term,
                 cli: peer.clone(),
-                next_index: 0,
+                next_index: 1,
                 match_index: 0,
                 cancel: cancel_rx.clone(),
                 msg_queue: args.msg_queue.clone(),
@@ -45,7 +45,7 @@ struct Follower {
     next_index: u64,
     match_index: u64,
 
-    // TODO: channel to receive messages
+    // TODO: use watch to notify that there's new log entry. The value should be the latest index.
     cancel: tokio::sync::watch::Receiver<()>,
     msg_queue: tokio::sync::mpsc::Sender<Message>,
 }
@@ -59,6 +59,8 @@ impl Follower {
             // TODO: locate the latest match index
             // TODO: break the loop if matched
             // }
+
+            // TODO: initiate install snapshot if needed
 
             loop {
                 let heartbeat = tokio::time::sleep(tokio::time::Duration::from_millis(50));
@@ -82,7 +84,8 @@ impl Follower {
             term: self.current_term,
             entries: vec![], // TODO: zero copy
             leader_commit: 0,
-            prev_log_index: 0,
+            prev_log_index: self.next_index - 1,
+            prev_log_term: 0, // TODO: get the corresponding term from log storage.
         });
         request.set_timeout(tokio::time::Duration::from_millis(50)); // TODO: customize
 
@@ -112,6 +115,17 @@ impl Follower {
                 _ = self.cancel.changed() => return Err(HeartbeatError::Canceled),
                 _ = self.msg_queue.send(Message::BackToFollower { term: res.term }) => return Err(HeartbeatError::BackToFollower),
             };
+        }
+
+        if self.next_index == 1 {
+            error!(
+                id = *self.cli.id,
+                "The peer does not implement the protocol correctly"
+            );
+            return Err(HeartbeatError::ReceiveFailure);
+        } else {
+            // TODO: optimize by having a peer return the latest possible log index.
+            self.next_index -= 1;
         }
         Ok(())
     }
