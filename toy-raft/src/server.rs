@@ -3,7 +3,6 @@ use std::{
     sync::Arc,
 };
 
-use tokio::sync::Mutex;
 use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
 use tracing::{error, info_span};
 
@@ -13,7 +12,6 @@ pub struct Server {
     id: String,
     addr: SocketAddr,
     actor: Arc<raft::Actor>,
-    log: Arc<Mutex<grpc::LogEntry>>,
 }
 
 impl Server {
@@ -30,15 +28,10 @@ impl Server {
 
         let actor = Arc::new(raft::Actor::new(config.clone()));
 
-        let log = Arc::new(Mutex::new(grpc::LogEntry {
-            term: 0,
-            data: vec![],
-        }));
         Ok(Server {
             id: config.id,
             addr,
             actor,
-            log,
         })
     }
 
@@ -115,7 +108,7 @@ impl grpc::raft_server::Raft for Arc<Server> {
             .append_entries(msg)
             .await
             .map_err(|e| tonic::Status::internal(format!("Internal error: {}", e)))?;
-        Ok(tonic::Response::new(res))
+        Ok(tonic::Response::new(res?))
     }
 
     async fn request_vote(

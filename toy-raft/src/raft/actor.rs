@@ -1,9 +1,9 @@
 use crate::grpc;
 
-use super::{leader, message::*, vote};
+use super::{leader, log, message::*, vote};
 use rand::{Rng, SeedableRng};
 use std::sync::Arc;
-use tracing::{info, trace};
+use tracing::{error, info, trace};
 
 pub struct Actor {
     /// _cancel is to trigger the cancellation of the actor process when the
@@ -67,7 +67,7 @@ impl Actor {
     pub async fn append_entries(
         &self,
         msg: grpc::AppendEntriesRequest,
-    ) -> Result<grpc::AppendEntriesResponse, MessageError> {
+    ) -> Result<Result<grpc::AppendEntriesResponse, tonic::Status>, MessageError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.message_queue
             .send(Message::AppendEntries {
@@ -159,7 +159,7 @@ impl ActorProcess {
                 let _ = result.send(self.state.clone());
             }
             Message::AppendEntries { request, result } => {
-                let response = self.append_entries(request);
+                let response = self.append_entries(request).await;
                 if result.send(response).is_err() {
                     info!("Returning the result of AppendEntries failed");
                 }
@@ -176,38 +176,79 @@ impl ActorProcess {
         }
     }
 
-    fn append_entries(
+    async fn append_entries(
         &mut self,
         request: grpc::AppendEntriesRequest,
-    ) -> grpc::AppendEntriesResponse {
+    ) -> Result<grpc::AppendEntriesResponse, tonic::Status> {
         if request.term < self.state.current_term {
-            return grpc::AppendEntriesResponse {
+            return Ok(grpc::AppendEntriesResponse {
                 term: self.state.current_term,
                 success: false,
-            };
+            });
         }
 
         match self.state.state {
-            NodeState::Follower => {
-                // TODO: check the content of request to support non-heartbeat messages.
-                self.state.current_term = request.term;
-                self.reset_heartbeat_timeout();
-                return grpc::AppendEntriesResponse {
+            NodeState::Follower => {}
+            NodeState::Leader if request.term == self.state.current_term => {
+                error!(
+                    duplicated_leader_id = request.leader_id,
+                    "Detected a duplicated leader"
+                );
+                return Ok(grpc::AppendEntriesResponse {
                     term: self.state.current_term,
-                    success: true,
-                };
+                    success: false,
+                });
             }
             NodeState::Candidate | NodeState::Leader => {
                 self.back_to_follower(request.term);
-
-                // TODO: returning this response can result in unnecessary AppendEntries with older index IDs.
-                // So, the same process as the follower should be done here.
-                return grpc::AppendEntriesResponse {
-                    term: self.state.current_term,
-                    success: false,
-                };
             }
         };
+
+        self.state.current_term = request.term;
+
+        // This redundant implementation of reset_heartbeat_timeout is to avoid
+        // the borrow checker error.
+        let jitter: u64 = self.rng.gen_range(0..150);
+        let heartbeat_deadline = &mut self.state.heartbeat_deadline;
+        scopeguard::defer! {
+            // This reset is a little redundant because of back_to_follower above,
+            // but necessary because the storage operation could take time.
+            *heartbeat_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(150 + jitter);
+        };
+
+        match self
+            .config
+            .storage
+            .append_entries(
+                request.prev_log_index,
+                request.prev_log_term,
+                request.entries.into_iter().map(Into::into).collect(),
+            )
+            .await
+        {
+            Ok(()) => Ok(grpc::AppendEntriesResponse {
+                term: self.state.current_term,
+                success: true,
+            }),
+            Err(log::StorageError::InconsistentPreviousEntry {
+                expected_term,
+                actual_term,
+            }) => {
+                // TODO: return a hint to the leader for quicker recovery.
+                Ok(grpc::AppendEntriesResponse {
+                    term: self.state.current_term,
+                    success: false,
+                })
+            }
+            Err(e) => {
+                error!(error = e.to_string(), "Failed to append entries");
+                // TODO: should return tonic::Status
+
+                let mut status = tonic::Status::internal("failed to append entries");
+                status.set_source(Arc::new(e));
+                Err(status)
+            }
+        }
     }
 
     async fn grant_vote(&mut self, request: grpc::RequestVoteRequest) -> bool {
@@ -274,6 +315,7 @@ impl ActorProcess {
                     current_term: self.state.current_term,
                     msg_queue: self.tx.clone(),
                     peers: self.peers.clone(),
+                    storage: self.config.storage.clone(),
                 }));
             }
             VoteResult::NotGranted {

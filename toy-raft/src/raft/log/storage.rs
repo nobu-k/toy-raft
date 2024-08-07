@@ -1,3 +1,4 @@
+use crate::grpc;
 use std::sync::Arc;
 
 pub type BoxedError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -107,5 +108,15 @@ impl Entry {
     /// Returns the data of the entry.
     pub fn data(&self) -> Arc<Vec<u8>> {
         self.data.clone()
+    }
+}
+
+impl From<grpc::LogEntry> for Entry {
+    fn from(entry: grpc::LogEntry) -> Self {
+        Entry {
+            index: entry.index,
+            term: entry.term,
+            data: Arc::new(entry.data),
+        }
     }
 }

@@ -36,7 +36,7 @@ pub enum Message {
     GetState(tokio::sync::oneshot::Sender<ActorState>),
     AppendEntries {
         request: grpc::AppendEntriesRequest,
-        result: tokio::sync::oneshot::Sender<grpc::AppendEntriesResponse>,
+        result: tokio::sync::oneshot::Sender<Result<grpc::AppendEntriesResponse, tonic::Status>>,
     },
     GrantVote {
         request: grpc::RequestVoteRequest,

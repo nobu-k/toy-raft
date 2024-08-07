@@ -1,7 +1,7 @@
-use tracing::{error, warn};
+use tracing::error;
 
 use super::message::*;
-use crate::{grpc, Peer};
+use crate::grpc;
 use std::sync::Arc;
 
 pub struct Leader {
@@ -14,6 +14,7 @@ pub struct Args {
     pub current_term: u64,
     pub peers: Arc<Vec<PeerClient>>,
     pub msg_queue: tokio::sync::mpsc::Sender<Message>,
+    pub storage: crate::config::SharedStorage,
 }
 
 impl Leader {
@@ -27,6 +28,7 @@ impl Leader {
                 cli: peer.clone(),
                 next_index: 1,
                 match_index: 0,
+                storage: args.storage.clone(),
                 cancel: cancel_rx.clone(),
                 msg_queue: args.msg_queue.clone(),
             };
@@ -45,6 +47,7 @@ struct Follower {
     next_index: u64,
     match_index: u64,
 
+    storage: crate::config::SharedStorage,
     // TODO: use watch to notify that there's new log entry. The value should be the latest index.
     cancel: tokio::sync::watch::Receiver<()>,
     msg_queue: tokio::sync::mpsc::Sender<Message>,
