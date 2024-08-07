@@ -16,6 +16,7 @@ impl MemoryStorage {
     }
 }
 
+#[async_trait::async_trait]
 impl Storage for MemoryStorage {
     async fn get_first_entry(&self) -> Result<Option<Entry>, StorageError> {
         let entries = self.entries.read().await;
@@ -45,11 +46,7 @@ impl Storage for MemoryStorage {
         }
     }
 
-    async fn append_entry(
-        &mut self,
-        term: u64,
-        entry: Arc<Vec<u8>>,
-    ) -> Result<Entry, StorageError> {
+    async fn append_entry(&self, term: u64, entry: Arc<Vec<u8>>) -> Result<Entry, StorageError> {
         let mut entries = self.entries.write().await;
         if let Some(last) = entries.last() {
             if last.term() > term {
@@ -67,7 +64,7 @@ impl Storage for MemoryStorage {
     }
 
     async fn append_entries(
-        &mut self,
+        &self,
         prev_index: u64,
         prev_term: u64,
         new_entries: Vec<Entry>,
@@ -224,5 +221,10 @@ mod tests {
             Err(_) => panic!("unexpected error"),
             Ok(_) => panic!("unexpected success"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_sync_send() {
+        let _: Arc<dyn Storage + Sync + Send + 'static> = Arc::new(MemoryStorage::new());
     }
 }

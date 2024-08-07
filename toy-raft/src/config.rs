@@ -1,16 +1,20 @@
-use std::net::ToSocketAddrs;
+use std::{net::ToSocketAddrs, sync::Arc};
 
-#[derive(Debug, Clone)]
+pub type SharedStorage = Arc<dyn crate::raft::log::Storage + Sync + Send + 'static>;
+
+#[derive(Clone)]
 pub struct Config {
     pub(crate) id: String,
     pub(crate) addr: String,
     pub(crate) peers: Vec<Peer>,
+    pub(crate) storage: SharedStorage,
 }
 
 pub struct Builder {
     id: Option<String>,
     addr: Option<String>,
     peers: Vec<Peer>,
+    storage: Option<SharedStorage>,
 }
 
 impl Config {
@@ -19,6 +23,7 @@ impl Config {
             id: None,
             addr: None,
             peers: vec![],
+            storage: None,
         }
     }
 }
@@ -101,6 +106,9 @@ impl Builder {
             id: self.id.unwrap(),
             addr: self.addr.unwrap(),
             peers: self.peers,
+            storage: self
+                .storage
+                .unwrap_or_else(|| Arc::new(crate::raft::log::MemoryStorage::new())),
         })
     }
 
@@ -117,6 +125,11 @@ impl Builder {
     /// Set the list of peers. The list can contain the current server.
     pub fn peers(mut self, peers: Vec<Peer>) -> Self {
         self.peers = peers;
+        self
+    }
+
+    pub fn storage(mut self, storage: SharedStorage) -> Self {
+        self.storage = Some(storage);
         self
     }
 

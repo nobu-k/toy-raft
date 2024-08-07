@@ -33,6 +33,11 @@ pub enum StorageError {
 
 /// The trait that the log storage engine need to implement. The index starts
 /// from 1.
+///
+/// Storage engines usually need fine-grained locking for performance. So, this
+/// trait is designed to be used with Arc with interior mutability implemented
+/// by each engine.
+#[async_trait::async_trait]
 pub trait Storage {
     /// Returns the first index of the log stored in the storage. The first
     /// index might not be 0 because the log can be compacted. It returns None
@@ -49,8 +54,7 @@ pub trait Storage {
 
     /// Appends a new entry to the log. It returns the index information of the
     /// new entry. This method is usually called by the leader.
-    async fn append_entry(&mut self, term: u64, entry: Arc<Vec<u8>>)
-        -> Result<Entry, StorageError>;
+    async fn append_entry(&self, term: u64, entry: Arc<Vec<u8>>) -> Result<Entry, StorageError>;
 
     /// Append the entries provided by the leader. If the prev_index is not the
     /// last entry, the storage will delete the existing entries after the
@@ -60,7 +64,7 @@ pub trait Storage {
     /// does not exist or exists but the term does not match.
     // TODO: return the potentially matching index or term to optimize initialization process at the leader.
     async fn append_entries(
-        &mut self,
+        &self,
         prev_index: u64,
         prev_term: u64,
         new_entries: Vec<Entry>,
