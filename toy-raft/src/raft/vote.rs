@@ -1,6 +1,6 @@
-use super::message::*;
+use super::{log::StorageError, message::*};
 use crate::{grpc, raft::metrics};
-use std::sync::Arc;
+use std::{f32::consts::E, sync::Arc};
 use tracing::{info, info_span, warn};
 
 pub struct Vote {
@@ -12,6 +12,8 @@ pub struct Vote {
 pub struct Args {
     pub id: String,
     pub current_term: u64,
+    pub last_log_index: u64,
+    pub last_log_term: u64,
     pub msg_queue: tokio::sync::mpsc::Sender<Message>,
     pub peers: Arc<Vec<PeerClient>>,
 }
@@ -171,8 +173,8 @@ impl VoteProcess {
             let mut request = tonic::Request::new(grpc::RequestVoteRequest {
                 term: args.current_term,
                 candidate_id: args.id.clone(),
-                last_log_index: 0,
-                last_log_term: 0,
+                last_log_index: args.last_log_index,
+                last_log_term: args.last_log_term,
             });
 
             let mut p = p.clone();

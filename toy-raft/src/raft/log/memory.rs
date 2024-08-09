@@ -111,7 +111,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_append_entry() {
-        let mut storage = MemoryStorage::new();
+        let storage = MemoryStorage::new();
         let entry = storage
             .append_entry(2, Arc::new(vec![1, 2, 3]))
             .await
@@ -140,7 +140,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_entry() {
-        let mut storage = MemoryStorage::new();
+        let storage = MemoryStorage::new();
         storage
             .append_entry(1, Arc::new(vec![1, 2, 3]))
             .await
@@ -166,7 +166,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_append_entries() {
-        let mut storage = MemoryStorage::new();
+        let storage = MemoryStorage::new();
         storage
             .append_entry(1, Arc::new(vec![1, 2, 3]))
             .await

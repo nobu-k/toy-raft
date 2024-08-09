@@ -174,11 +174,12 @@ impl ActorProcess {
                 }
             }
             Message::GrantVote { request, result } => {
+                // Never reset the heartbeat here to minimize the possibility
+                // that a stale candidate keeps trying to become a leader.
                 let granted = self.grant_vote(request).await;
                 if result.send((self.state.clone(), granted)).is_err() {
                     info!("Returning the result of GrantVote failed");
                 }
-                self.reset_heartbeat_timeout();
             }
             Message::VoteCompleted(res) => self.vote_completed(res),
             Message::BackToFollower { term } => self.back_to_follower(term),
@@ -247,8 +248,6 @@ impl ActorProcess {
             }
             Err(e) => {
                 error!(error = e.to_string(), "Failed to append entries");
-                // TODO: should return tonic::Status
-
                 let mut status = tonic::Status::internal("failed to append entries");
                 status.set_source(Arc::new(e));
                 Err(status)
@@ -258,6 +257,27 @@ impl ActorProcess {
 
     async fn grant_vote(&mut self, request: grpc::RequestVoteRequest) -> bool {
         if request.term <= self.state.current_term {
+            return false;
+        }
+        if self.state.voted_for.is_some() {
+            return false;
+        }
+        let (last_index, last_term) = match self.config.storage.get_last_entry().await {
+            Ok(Some(entry)) => (entry.index(), entry.term()),
+            Ok(None) => (0, 0),
+            Err(e) => {
+                error!(
+                    error = e.to_string(),
+                    "Failed to get the last entry of the log"
+                );
+                // This process can't be certain about the vote request, so
+                // returning false.
+                return false;
+            }
+        };
+
+        // Check the safety guarantee for the Leader Completeness property.
+        if request.last_log_index < last_index || request.last_log_term < last_term {
             return false;
         }
 
@@ -340,6 +360,19 @@ impl ActorProcess {
     }
 
     async fn request_vote(&mut self) {
+        let (last_log_index, last_log_term) = match self.config.storage.get_last_entry().await {
+            Ok(Some(entry)) => (entry.index(), entry.term()),
+            Ok(None) => (0, 0),
+            Err(e) => {
+                error!(
+                    error = e.to_string(),
+                    "Failed to get the last entry of the log before request vote, keep being a follower"
+                );
+                self.reset_heartbeat_timeout();
+                return;
+            }
+        };
+
         self.state.current_term += 1;
         self.state.state = NodeState::Candidate;
         self.reset_heartbeat_timeout();
@@ -357,6 +390,8 @@ impl ActorProcess {
         self.vote = Some(vote::Vote::start(vote::Args {
             id: self.config.id.clone(),
             current_term: self.state.current_term,
+            last_log_index,
+            last_log_term,
             msg_queue: self.tx.clone(),
             peers: self.peers.clone(),
         }));
