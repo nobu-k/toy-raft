@@ -115,6 +115,16 @@ struct ActorProcess {
     rx: tokio::sync::mpsc::Receiver<Message>,
 }
 
+macro_rules! reset_timeout {
+    ($self:ident, $guard:ident, $instant:expr, $base_msec:expr) => {
+        let jitter: u64 = $self.rng.gen_range(0..150);
+        $guard = scopeguard::guard($instant, move |i| {
+            *i = tokio::time::Instant::now()
+                + tokio::time::Duration::from_millis($base_msec + jitter);
+        });
+    };
+}
+
 impl ActorProcess {
     /// Main loop of the Raft actor. This actor process is canceled when the
     /// corresponding Actor is dropped.
@@ -148,9 +158,8 @@ impl ActorProcess {
     }
 
     fn reset_heartbeat_timeout(&mut self) {
-        let jitter: u64 = self.rng.gen_range(0..150);
-        self.state.heartbeat_deadline =
-            tokio::time::Instant::now() + tokio::time::Duration::from_millis(150 + jitter);
+        let _guard;
+        reset_timeout!(self, _guard, &mut self.state.heartbeat_deadline, 150);
     }
 
     async fn handle_message(&mut self, msg: Message) {
@@ -181,6 +190,7 @@ impl ActorProcess {
         request: grpc::AppendEntriesRequest,
     ) -> Result<grpc::AppendEntriesResponse, tonic::Status> {
         if request.term < self.state.current_term {
+            // The term is too old, so don't reset the heartbeat timeout here.
             return Ok(grpc::AppendEntriesResponse {
                 term: self.state.current_term,
                 success: false,
@@ -208,13 +218,8 @@ impl ActorProcess {
 
         // This redundant implementation of reset_heartbeat_timeout is to avoid
         // the borrow checker error.
-        let jitter: u64 = self.rng.gen_range(0..150);
-        let heartbeat_deadline = &mut self.state.heartbeat_deadline;
-        scopeguard::defer! {
-            // This reset is a little redundant because of back_to_follower above,
-            // but necessary because the storage operation could take time.
-            *heartbeat_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(150 + jitter);
-        };
+        let _guard;
+        reset_timeout!(self, _guard, &mut self.state.heartbeat_deadline, 150);
 
         match self
             .config
@@ -358,7 +363,12 @@ impl ActorProcess {
     }
 
     fn back_to_follower(&mut self, term: u64) {
-        if term <= self.state.current_term {
+        // There's a case that the leader wants to step down due to some
+        // unrecoverable error, so `==` condition must be taken care of.
+        //
+        // TODO: in thi case, the process shouldn't become a leader again until
+        // the problem is resolved.
+        if term < self.state.current_term {
             return;
         }
 

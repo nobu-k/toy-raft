@@ -1,6 +1,6 @@
 use tracing::error;
 
-use super::message::*;
+use super::{log, message::*};
 use crate::grpc;
 use std::sync::Arc;
 
@@ -65,6 +65,9 @@ impl Follower {
 
             // TODO: initiate install snapshot if needed
 
+            // This loop assumes that followers reset the heartbeat timeout
+            // every time they receive a message right before they return the
+            // response.
             loop {
                 let heartbeat = tokio::time::sleep(tokio::time::Duration::from_millis(50));
                 tokio::select! {
@@ -82,13 +85,28 @@ impl Follower {
     }
 
     async fn send_heartbeat(&mut self) -> Result<(), HeartbeatError> {
+        let prev_log_term = match self.storage.get_entry(self.next_index - 1).await {
+            Ok(Some(entry)) => entry.term(),
+            Ok(None) => 0,
+            Err(e) => {
+                error!(
+                    error = e.to_string(),
+                    "Failed to get the previous log term from the storage"
+                );
+                let _ = self.back_to_follower(self.current_term).await;
+                return Err(HeartbeatError::StorageError(
+                    "failed to get the previous log term from the storage",
+                    e,
+                ));
+            }
+        };
         let mut request = tonic::Request::new(grpc::AppendEntriesRequest {
             leader_id: self.leader_id.clone(),
             term: self.current_term,
             entries: vec![], // TODO: zero copy
             leader_commit: 0,
             prev_log_index: self.next_index - 1,
-            prev_log_term: 0, // TODO: get the corresponding term from log storage.
+            prev_log_term,
         });
         request.set_timeout(tokio::time::Duration::from_millis(50)); // TODO: customize
 
@@ -110,14 +128,12 @@ impl Follower {
     ) -> Result<(), HeartbeatError> {
         let res = res.into_inner();
         if res.success {
+            self.match_index = self.next_index - 1;
             return Ok(());
         }
 
         if res.term > self.current_term {
-            tokio::select! {
-                _ = self.cancel.changed() => return Err(HeartbeatError::Canceled),
-                _ = self.msg_queue.send(Message::BackToFollower { term: res.term }) => return Err(HeartbeatError::BackToFollower),
-            };
+            return self.back_to_follower(res.term).await;
         }
 
         if self.next_index == 1 {
@@ -132,10 +148,26 @@ impl Follower {
         }
         Ok(())
     }
+
+    async fn back_to_follower(&mut self, term: u64) -> Result<(), HeartbeatError> {
+        tokio::select! {
+            _ = self.cancel.changed() => return Err(HeartbeatError::Canceled),
+            _ = self.msg_queue.send(Message::BackToFollower { term: term }) => return Err(HeartbeatError::BackToFollower),
+        };
+    }
 }
 
+#[derive(Debug, thiserror::Error)]
 enum HeartbeatError {
+    #[error("failed to receive a heartbeat response")]
     ReceiveFailure,
+
+    #[error("{0}: {1}")]
+    StorageError(&'static str, #[source] log::StorageError),
+
+    #[error("operation canceled")]
     Canceled,
+
+    #[error("need to back to follower")]
     BackToFollower,
 }
