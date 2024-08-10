@@ -1,4 +1,7 @@
-use crate::grpc;
+use crate::{
+    grpc,
+    raft::message::{Index, Term},
+};
 use std::sync::Arc;
 
 pub type BoxedError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -7,13 +10,15 @@ pub type BoxedError = Box<dyn std::error::Error + Send + Sync + 'static>;
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     /// The given term is older than the latest term in the storage.
-    #[error("the given term is older than the latest term in the storage: {term} < {latest_term}")]
+    #[error(
+        "the given term is older than the latest term in the storage: {} < {}", term.get(), latest_term.get()
+    )]
     StaleTerm {
         /// The term given to append_entry.
-        term: u64,
+        term: Term,
 
         /// The latest term in the storage.
-        latest_term: u64,
+        latest_term: Term,
     },
 
     #[error("the storage is full{}", .0.as_ref().map_or_else(|| "".to_owned(), |e| format!(": {}", e)))]
@@ -21,10 +26,10 @@ pub enum StorageError {
 
     #[error("the requested previous log entry was not found or found but the term does not match")]
     InconsistentPreviousEntry {
-        expected_term: u64,
+        expected_term: Term,
         /// The actual term of the corresponding entry. If this is None, it
         /// means the entry does not exist at prev_index.
-        actual_term: Option<u64>,
+        actual_term: Option<Term>,
     },
 
     /// Any custom error that the storage engine can return.
@@ -51,11 +56,11 @@ pub trait Storage {
 
     /// Returns the entry at the given index. It returns None when the index
     /// does not exist.
-    async fn get_entry(&self, index: u64) -> Result<Option<Entry>, StorageError>;
+    async fn get_entry(&self, index: Index) -> Result<Option<Entry>, StorageError>;
 
     /// Appends a new entry to the log. It returns the index information of the
     /// new entry. This method is usually called by the leader.
-    async fn append_entry(&self, term: u64, entry: Arc<Vec<u8>>) -> Result<Entry, StorageError>;
+    async fn append_entry(&self, term: Term, entry: Arc<Vec<u8>>) -> Result<Entry, StorageError>;
 
     /// Append the entries provided by the leader. If the prev_index is not the
     /// last entry, the storage will delete the existing entries after the
@@ -66,8 +71,8 @@ pub trait Storage {
     // TODO: return the potentially matching index or term to optimize initialization process at the leader.
     async fn append_entries(
         &self,
-        prev_index: u64,
-        prev_term: u64,
+        prev_index: Index,
+        prev_term: Term,
         new_entries: Vec<Entry>,
     ) -> Result<(), StorageError>;
 }
@@ -76,10 +81,10 @@ pub trait Storage {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     /// The index of the entry in the log.
-    index: u64,
+    index: Index,
 
     /// The term that this entry has been written.
-    term: u64,
+    term: Term,
 
     /// The data of the entry. The content can be empty.
     data: Arc<Vec<u8>>,
@@ -87,7 +92,7 @@ pub struct Entry {
 
 impl Entry {
     /// Creates a new Entry instance.
-    pub fn new(index: u64, term: u64, data: Arc<Vec<u8>>) -> Self {
+    pub fn new(index: Index, term: Term, data: Arc<Vec<u8>>) -> Self {
         Entry {
             index,
             term,
@@ -96,12 +101,12 @@ impl Entry {
     }
 
     /// Returns the index of the entry.
-    pub fn index(&self) -> u64 {
+    pub fn index(&self) -> Index {
         self.index
     }
 
     /// Returns the term of the entry.
-    pub fn term(&self) -> u64 {
+    pub fn term(&self) -> Term {
         self.term
     }
 
@@ -114,8 +119,8 @@ impl Entry {
 impl From<grpc::LogEntry> for Entry {
     fn from(entry: grpc::LogEntry) -> Self {
         Entry {
-            index: entry.index,
-            term: entry.term,
+            index: Index::new(entry.index),
+            term: Term::new(entry.term),
             data: Arc::new(entry.data),
         }
     }

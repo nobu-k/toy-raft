@@ -11,7 +11,7 @@ pub struct Leader {
 
 pub struct Args {
     pub id: String,
-    pub current_term: u64,
+    pub current_term: Term,
     pub peers: Arc<Vec<PeerClient>>,
     pub msg_queue: tokio::sync::mpsc::Sender<Message>,
     pub storage: crate::config::SharedStorage,
@@ -26,8 +26,8 @@ impl Leader {
                 leader_id: args.id.clone(),
                 current_term: args.current_term,
                 cli: peer.clone(),
-                next_index: 1,
-                match_index: 0,
+                next_index: Index::new(1),
+                match_index: Index::new(0),
                 storage: args.storage.clone(),
                 cancel: cancel_rx.clone(),
                 msg_queue: args.msg_queue.clone(),
@@ -41,11 +41,11 @@ impl Leader {
 
 struct Follower {
     leader_id: String,
-    current_term: u64,
+    current_term: Term,
     cli: PeerClient,
 
-    next_index: u64,
-    match_index: u64,
+    next_index: Index,
+    match_index: Index,
 
     storage: crate::config::SharedStorage,
     // TODO: use watch to notify that there's new log entry. The value should be the latest index.
@@ -85,9 +85,9 @@ impl Follower {
     }
 
     async fn send_heartbeat(&mut self) -> Result<(), HeartbeatError> {
-        let prev_log_term = match self.storage.get_entry(self.next_index - 1).await {
+        let prev_log_term = match self.storage.get_entry(self.next_index.prev()).await {
             Ok(Some(entry)) => entry.term(),
-            Ok(None) => 0,
+            Ok(None) => Term::new(0),
             Err(e) => {
                 error!(
                     error = e.to_string(),
@@ -102,11 +102,11 @@ impl Follower {
         };
         let mut request = tonic::Request::new(grpc::AppendEntriesRequest {
             leader_id: self.leader_id.clone(),
-            term: self.current_term,
+            term: self.current_term.get(),
             entries: vec![], // TODO: zero copy
             leader_commit: 0,
-            prev_log_index: self.next_index - 1,
-            prev_log_term,
+            prev_log_index: self.next_index.prev().get(),
+            prev_log_term: prev_log_term.get(),
         });
         request.set_timeout(tokio::time::Duration::from_millis(50)); // TODO: customize
 
@@ -128,15 +128,15 @@ impl Follower {
     ) -> Result<(), HeartbeatError> {
         let res = res.into_inner();
         if res.success {
-            self.match_index = self.next_index - 1;
+            self.match_index = self.next_index.prev();
             return Ok(());
         }
 
-        if res.term > self.current_term {
-            return self.back_to_follower(res.term).await;
+        if res.term > self.current_term.get() {
+            return self.back_to_follower(Term::new(res.term)).await;
         }
 
-        if self.next_index == 1 {
+        if self.next_index.get() == 1 {
             error!(
                 id = *self.cli.id,
                 "The peer does not implement the protocol correctly"
@@ -144,12 +144,12 @@ impl Follower {
             return Err(HeartbeatError::ReceiveFailure);
         } else {
             // TODO: optimize by having a peer return the latest possible log index.
-            self.next_index -= 1;
+            self.next_index.dec();
         }
         Ok(())
     }
 
-    async fn back_to_follower(&mut self, term: u64) -> Result<(), HeartbeatError> {
+    async fn back_to_follower(&mut self, term: Term) -> Result<(), HeartbeatError> {
         tokio::select! {
             _ = self.cancel.changed() => return Err(HeartbeatError::Canceled),
             _ = self.msg_queue.send(Message::BackToFollower { term: term }) => return Err(HeartbeatError::BackToFollower),

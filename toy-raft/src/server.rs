@@ -122,7 +122,7 @@ impl grpc::raft_server::Raft for Arc<Server> {
             .await
             .map_err(|e| tonic::Status::internal(format!("Internal error: {}", e)))?;
         Ok(tonic::Response::new(grpc::RequestVoteResponse {
-            term: state.current_term,
+            term: state.current_term.get(),
             vote_granted: granted,
         }))
     }
@@ -141,7 +141,7 @@ impl grpc::operations_server::Operations for Arc<Server> {
             s
         })?;
         Ok(tonic::Response::new(grpc::StatusResponse {
-            term: state.current_term,
+            term: state.current_term.get(),
             state: match state.state {
                 raft::NodeState::Follower => grpc::State::Follower as i32,
                 raft::NodeState::Candidate => grpc::State::Candidate as i32,

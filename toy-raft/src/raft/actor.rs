@@ -35,7 +35,7 @@ impl Actor {
 
         let actor = ActorProcess {
             state: ActorState {
-                current_term: 0,
+                current_term: Term::new(0),
                 voted_for: None,
                 state: NodeState::Follower,
                 heartbeat_deadline: tokio::time::Instant::now()
@@ -190,32 +190,32 @@ impl ActorProcess {
         &mut self,
         request: grpc::AppendEntriesRequest,
     ) -> Result<grpc::AppendEntriesResponse, tonic::Status> {
-        if request.term < self.state.current_term {
+        if request.term < self.state.current_term.get() {
             // The term is too old, so don't reset the heartbeat timeout here.
             return Ok(grpc::AppendEntriesResponse {
-                term: self.state.current_term,
+                term: self.state.current_term.get(),
                 success: false,
             });
         }
 
         match self.state.state {
             NodeState::Follower => {}
-            NodeState::Leader if request.term == self.state.current_term => {
+            NodeState::Leader if request.term == self.state.current_term.get() => {
                 error!(
                     duplicated_leader_id = request.leader_id,
                     "Detected a duplicated leader"
                 );
                 return Ok(grpc::AppendEntriesResponse {
-                    term: self.state.current_term,
+                    term: self.state.current_term.get(),
                     success: false,
                 });
             }
             NodeState::Candidate | NodeState::Leader => {
-                self.back_to_follower(request.term);
+                self.back_to_follower(Term::new(request.term));
             }
         };
 
-        self.state.current_term = request.term;
+        self.state.current_term = Term::new(request.term);
 
         // This redundant implementation of reset_heartbeat_timeout is to avoid
         // the borrow checker error.
@@ -226,14 +226,14 @@ impl ActorProcess {
             .config
             .storage
             .append_entries(
-                request.prev_log_index,
-                request.prev_log_term,
+                Index::new(request.prev_log_index),
+                Term::new(request.prev_log_term),
                 request.entries.into_iter().map(Into::into).collect(),
             )
             .await
         {
             Ok(()) => Ok(grpc::AppendEntriesResponse {
-                term: self.state.current_term,
+                term: self.state.current_term.get(),
                 success: true,
             }),
             Err(log::StorageError::InconsistentPreviousEntry {
@@ -242,7 +242,7 @@ impl ActorProcess {
             }) => {
                 // TODO: return a hint to the leader for quicker recovery.
                 Ok(grpc::AppendEntriesResponse {
-                    term: self.state.current_term,
+                    term: self.state.current_term.get(),
                     success: false,
                 })
             }
@@ -256,7 +256,7 @@ impl ActorProcess {
     }
 
     async fn grant_vote(&mut self, request: grpc::RequestVoteRequest) -> bool {
-        if request.term <= self.state.current_term {
+        if request.term <= self.state.current_term.get() {
             return false;
         }
         if self.state.voted_for.is_some() {
@@ -264,7 +264,7 @@ impl ActorProcess {
         }
         let (last_index, last_term) = match self.config.storage.get_last_entry().await {
             Ok(Some(entry)) => (entry.index(), entry.term()),
-            Ok(None) => (0, 0),
+            Ok(None) => (Index::new(0), Term::new(0)),
             Err(e) => {
                 error!(
                     error = e.to_string(),
@@ -277,7 +277,7 @@ impl ActorProcess {
         };
 
         // Check the safety guarantee for the Leader Completeness property.
-        if request.last_log_index < last_index || request.last_log_term < last_term {
+        if request.last_log_index < last_index.get() || request.last_log_term < last_term.get() {
             return false;
         }
 
@@ -289,13 +289,13 @@ impl ActorProcess {
         self.leader.take();
 
         info!(
-            current_term = self.state.current_term,
+            current_term = self.state.current_term.get(),
             new_term = request.term,
             candidate_id = request.candidate_id,
             "Granting vote"
         );
 
-        self.state.current_term = request.term;
+        self.state.current_term = Term::new(request.term);
         self.state.voted_for = Some(request.candidate_id.clone());
 
         match self.state.state {
@@ -308,11 +308,11 @@ impl ActorProcess {
     }
 
     fn vote_completed(&mut self, res: VoteResult) {
-        let ignore_old = |vote_term| {
+        let ignore_old = |vote_term: Term| {
             if vote_term != self.state.current_term {
                 trace!(
-                    current_term = self.state.current_term,
-                    vote_term,
+                    current_term = self.state.current_term.get(),
+                    vote_term = vote_term.get(),
                     "Ignoring the old vote result"
                 );
                 return true;
@@ -327,7 +327,7 @@ impl ActorProcess {
                 }
                 self.state.state = NodeState::Leader;
                 info!(
-                    term = self.state.current_term,
+                    term = self.state.current_term.get(),
                     "Vote granted, becoming a leader"
                 );
 
@@ -351,7 +351,7 @@ impl ActorProcess {
                     return;
                 }
 
-                self.state.current_term = res.term;
+                self.state.current_term = Term::new(res.term);
                 self.state.state = NodeState::Follower;
                 info!(term = res.term, "Vote not granted, back to a follower");
                 self.reset_heartbeat_timeout();
@@ -362,7 +362,7 @@ impl ActorProcess {
     async fn request_vote(&mut self) {
         let (last_log_index, last_log_term) = match self.config.storage.get_last_entry().await {
             Ok(Some(entry)) => (entry.index(), entry.term()),
-            Ok(None) => (0, 0),
+            Ok(None) => (Index::new(0), Term::new(0)),
             Err(e) => {
                 error!(
                     error = e.to_string(),
@@ -373,7 +373,7 @@ impl ActorProcess {
             }
         };
 
-        self.state.current_term += 1;
+        self.state.current_term.inc();
         self.state.state = NodeState::Candidate;
         self.reset_heartbeat_timeout();
 
@@ -381,7 +381,7 @@ impl ActorProcess {
         if let Some(mut vote) = vote {
             if vote.is_active() {
                 info!(
-                    vote_term = vote.vote_term(),
+                    vote_term = vote.vote_term().get(),
                     "Canceling the previous vote process"
                 );
                 vote.cancel().await;
@@ -397,7 +397,7 @@ impl ActorProcess {
         }));
     }
 
-    fn back_to_follower(&mut self, term: u64) {
+    fn back_to_follower(&mut self, term: Term) {
         // There's a case that the leader wants to step down due to some
         // unrecoverable error, so `==` condition must be taken care of.
         //

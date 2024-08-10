@@ -1,19 +1,19 @@
-use super::{log::StorageError, message::*};
+use super::message::*;
 use crate::{grpc, raft::metrics};
-use std::{f32::consts::E, sync::Arc};
+use std::sync::Arc;
 use tracing::{info, info_span, warn};
 
 pub struct Vote {
-    vote_term: u64,
+    vote_term: Term,
     cancel: tokio::sync::watch::Sender<()>,
     ack: tokio::sync::oneshot::Receiver<()>,
 }
 
 pub struct Args {
     pub id: String,
-    pub current_term: u64,
-    pub last_log_index: u64,
-    pub last_log_term: u64,
+    pub current_term: Term,
+    pub last_log_index: Index,
+    pub last_log_term: Term,
     pub msg_queue: tokio::sync::mpsc::Sender<Message>,
     pub peers: Arc<Vec<PeerClient>>,
 }
@@ -40,7 +40,7 @@ impl Vote {
         }
     }
 
-    pub fn vote_term(&self) -> u64 {
+    pub fn vote_term(&self) -> Term {
         self.vote_term
     }
 
@@ -75,7 +75,7 @@ impl VoteProcess {
         let _enter = span.enter();
         */
         info!(
-            term = self.args.current_term,
+            term = self.args.current_term.get(),
             peers = self.args.peers.len(),
             "Initiating RequestVote RPC",
         );
@@ -106,7 +106,7 @@ impl VoteProcess {
 
         if granted > nodes / 2 {
             info!(
-                term = self.args.current_term,
+                term = self.args.current_term.get(),
                 peers = self.args.peers.len(),
                 vote_granted = granted,
                 "Vote granted"
@@ -122,7 +122,7 @@ impl VoteProcess {
             }
         } else {
             info!(
-                term = self.args.current_term,
+                term = self.args.current_term.get(),
                 peers = self.args.peers.len(),
                 vote_granted = granted,
                 "Vote not granted"
@@ -143,7 +143,7 @@ impl VoteProcess {
             Ok(res) => {
                 let granted = res.get_ref().vote_granted;
                 if !granted {
-                    if res.get_ref().term > self.args.current_term {
+                    if res.get_ref().term > self.args.current_term.get() {
                         tokio::select! {
                             _ = self
                             .args
@@ -171,10 +171,10 @@ impl VoteProcess {
         let mut set = tokio::task::JoinSet::new();
         for p in args.peers.iter() {
             let mut request = tonic::Request::new(grpc::RequestVoteRequest {
-                term: args.current_term,
+                term: args.current_term.get(),
                 candidate_id: args.id.clone(),
-                last_log_index: args.last_log_index,
-                last_log_term: args.last_log_term,
+                last_log_index: args.last_log_index.get(),
+                last_log_term: args.last_log_term.get(),
             });
 
             let mut p = p.clone();
