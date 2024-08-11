@@ -33,6 +33,7 @@ impl Actor {
             .collect();
         let peers = Arc::new(peers);
 
+        let (commit_index_tx, commit_index_rx) = tokio::sync::watch::channel(Index::new(0));
         let actor = ActorProcess {
             state: ActorState {
                 current_term: Term::new(0),
@@ -40,6 +41,8 @@ impl Actor {
                 state: NodeState::Follower,
                 heartbeat_deadline: tokio::time::Instant::now()
                     + tokio::time::Duration::from_millis(150), // TODO: randomize
+                commit_index_tx,
+                commit_index_rx,
             },
             config,
             peers,
@@ -341,6 +344,7 @@ impl ActorProcess {
                     msg_queue: self.tx.clone(),
                     peers: self.peers.clone(),
                     storage: self.config.storage.clone(),
+                    commit_index: self.state.commit_index_tx.clone(),
                 }));
             }
             VoteResult::NotGranted {

@@ -1,4 +1,4 @@
-use tracing::error;
+use tracing::{error, info};
 
 use super::{log, message::*};
 use crate::grpc;
@@ -14,20 +14,25 @@ pub struct Args {
     pub current_term: Term,
     pub peers: Arc<Vec<PeerClient>>,
     pub msg_queue: tokio::sync::mpsc::Sender<Message>,
+    pub commit_index: tokio::sync::watch::Sender<Index>,
     pub storage: crate::config::SharedStorage,
 }
 
 impl Leader {
     pub fn start(args: Args) -> Self {
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(());
+        let mut watchers = Vec::with_capacity(args.peers.len());
 
         for peer in args.peers.iter() {
+            let (tx, rx) = tokio::sync::watch::channel(Index::new(0));
+            watchers.push(rx);
+
             let follower = Follower {
                 leader_id: args.id.clone(),
                 current_term: args.current_term,
                 cli: peer.clone(),
                 next_index: Index::new(1),
-                match_index: Index::new(0),
+                match_index: tx,
                 storage: args.storage.clone(),
                 cancel: cancel_rx.clone(),
                 msg_queue: args.msg_queue.clone(),
@@ -35,7 +40,76 @@ impl Leader {
             tokio::spawn(follower.run());
         }
 
+        let syncer = CommitIndexSyncer {
+            match_indexes_watcher: watchers,
+            match_indexes: vec![Index::new(0); args.peers.len()],
+            commit_index: args.commit_index,
+            cancel: cancel_rx,
+        };
+        tokio::spawn(syncer.run());
         Leader { _cancel: cancel_tx }
+    }
+}
+
+struct CommitIndexSyncer {
+    match_indexes_watcher: Vec<tokio::sync::watch::Receiver<Index>>,
+    match_indexes: Vec<Index>,
+    commit_index: tokio::sync::watch::Sender<Index>,
+    cancel: tokio::sync::watch::Receiver<()>,
+}
+
+impl CommitIndexSyncer {
+    async fn run(mut self) {
+        let build_future = |i: usize, mut rx: tokio::sync::watch::Receiver<Index>| {
+            Box::pin(async move {
+                let res = rx.changed().await;
+                match res {
+                    Ok(_) => Ok(i),
+                    Err(e) => Err(e),
+                }
+            })
+        };
+
+        let mut waiters: Vec<_> = self
+            .match_indexes_watcher
+            .iter()
+            .enumerate()
+            .map(|(i, rx)| build_future(i, rx.clone()))
+            .collect();
+
+        let mut sorted: Vec<usize> = (0..self.match_indexes.len()).collect();
+        loop {
+            let res = tokio::select! {
+                res = futures::future::select_all(waiters.into_iter()) => res,
+                _ = self.cancel.changed() => return,
+            };
+
+            let (i, remaining) = match res {
+                (Ok(i), _, remaining) => (i, remaining),
+                (Err(e), _, _) => {
+                    info!(
+                        error = e.to_string(),
+                        "Failed to receive a match index, canceling"
+                    );
+                    return;
+                }
+            };
+            // Push the selected future back to the waiters.
+            waiters = remaining;
+            waiters.push(build_future(i, self.match_indexes_watcher[i].clone()));
+
+            // Sort the current match indexes and find the median, which means
+            // the majority of the followers have at least that index.
+            self.match_indexes[i] = *self.match_indexes_watcher[i].borrow();
+            sorted.sort_unstable_by_key(|&i| self.match_indexes[i]);
+            let new_commit_index = self.match_indexes[sorted[sorted.len() / 2]];
+            if new_commit_index > *self.commit_index.borrow() {
+                if let Err(_) = self.commit_index.send(new_commit_index) {
+                    // No receiver exists. This situation is the same as cancel.
+                    return;
+                }
+            }
+        }
     }
 }
 
@@ -45,7 +119,7 @@ struct Follower {
     cli: PeerClient,
 
     next_index: Index,
-    match_index: Index,
+    match_index: tokio::sync::watch::Sender<Index>,
 
     storage: crate::config::SharedStorage,
     // TODO: use watch to notify that there's new log entry. The value should be the latest index.
@@ -128,7 +202,12 @@ impl Follower {
     ) -> Result<(), HeartbeatError> {
         let res = res.into_inner();
         if res.success {
-            self.match_index = self.next_index.prev();
+            if *self.match_index.borrow() != self.next_index {
+                if let Err(_) = self.match_index.send(self.next_index) {
+                    // The leader is already gone.
+                    return Err(HeartbeatError::Canceled);
+                }
+            }
             return Ok(());
         }
 

@@ -68,6 +68,8 @@ pub struct ActorState {
     pub voted_for: Option<String>,
     pub state: NodeState,
     pub heartbeat_deadline: tokio::time::Instant,
+    pub commit_index_tx: tokio::sync::watch::Sender<Index>,
+    pub commit_index_rx: tokio::sync::watch::Receiver<Index>, // TODO: this goes to the Writer.
 }
 
 pub enum Message {
