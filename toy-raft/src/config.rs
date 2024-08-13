@@ -1,7 +1,7 @@
 use std::{net::ToSocketAddrs, sync::Arc};
 
-pub type SharedStorage = Arc<dyn crate::raft::log::Storage + Sync + Send + 'static>;
-pub type SharedStateMachine = Arc<dyn crate::raft::StateMachine + Sync + Send + 'static>;
+pub type SharedStorage = Arc<dyn crate::log::Storage + Sync + Send + 'static>;
+pub type SharedStateMachine = Arc<dyn crate::StateMachine + Sync + Send + 'static>;
 
 #[derive(Clone)]
 pub struct Config {
@@ -113,7 +113,7 @@ impl Builder {
             peers: self.peers,
             storage: self
                 .storage
-                .unwrap_or_else(|| Arc::new(crate::raft::log::MemoryStorage::new())),
+                .unwrap_or_else(|| Arc::new(crate::log::MemoryStorage::new())),
             state_machine: self.state_machine.unwrap(),
         })
     }

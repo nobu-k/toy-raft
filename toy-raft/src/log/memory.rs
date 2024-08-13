@@ -1,4 +1,4 @@
-use crate::raft::message::{Index, Term};
+use crate::message::{Index, Term};
 
 use super::storage::*;
 use std::sync::Arc;

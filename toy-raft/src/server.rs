@@ -6,12 +6,12 @@ use std::{
 use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
 use tracing::{error, info_span};
 
-use crate::{config, grpc, raft};
+use crate::{config, grpc, NodeState};
 
 pub struct Server {
     id: String,
     addr: SocketAddr,
-    actor: Arc<raft::Actor>,
+    actor: Arc<crate::actor::Actor>,
 }
 
 impl Server {
@@ -27,7 +27,7 @@ impl Server {
         let addr = addrs[0];
 
         let actor = Arc::new(
-            raft::Actor::new(config.clone())
+            crate::Actor::new(config.clone())
                 .await
                 .map_err(|e| ServerError::ActorError(e))?,
         );
@@ -100,7 +100,7 @@ pub enum ServerError {
     TooManyAddresses(usize, String),
 
     #[error("failed to create actor: {0}")]
-    ActorError(#[source] raft::StateMachineError),
+    ActorError(#[source] crate::StateMachineError),
 }
 
 #[tonic::async_trait]
@@ -150,12 +150,12 @@ impl grpc::operations_server::Operations for Arc<Server> {
         Ok(tonic::Response::new(grpc::StatusResponse {
             term: state.current_term.get(),
             state: match state.state {
-                raft::NodeState::Follower => grpc::State::Follower as i32,
-                raft::NodeState::Candidate => grpc::State::Candidate as i32,
-                raft::NodeState::Leader => grpc::State::Leader as i32,
+                NodeState::Follower => grpc::State::Follower as i32,
+                NodeState::Candidate => grpc::State::Candidate as i32,
+                NodeState::Leader => grpc::State::Leader as i32,
             },
             leader_id: match state.state {
-                raft::NodeState::Leader => Some(self.id.clone()),
+                NodeState::Leader => Some(self.id.clone()),
                 _ => state.voted_for,
             },
         }))

@@ -1,9 +1,19 @@
 mod config;
 pub mod grpc;
-mod raft;
 mod server;
 pub use config::Config;
 pub use config::Peer;
 pub use server::Server;
 
-pub use raft::*;
+mod actor;
+mod leader;
+pub mod log;
+mod message;
+mod metrics;
+mod state_machine;
+mod vote;
+mod writer;
+
+pub use actor::*;
+pub use message::{Index, NodeState, Term};
+pub use state_machine::{ApplyResponse, StateMachine, StateMachineError};

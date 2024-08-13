@@ -1,5 +1,5 @@
 use super::message::*;
-use crate::{grpc, raft::metrics};
+use crate::{grpc, metrics};
 use std::sync::Arc;
 use tracing::{info, info_span, warn};
 

@@ -1,6 +1,6 @@
 use crate::{
     grpc,
-    raft::message::{Index, Term},
+    message::{Index, Term},
 };
 use std::sync::Arc;
 
