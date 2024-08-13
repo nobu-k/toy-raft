@@ -1,11 +1,19 @@
 use tracing::{error, info};
 
-use super::{log, message::*};
+use super::{
+    log::{self, StorageError},
+    message::*,
+    state_machine::ApplyResponseReceiver,
+};
 use crate::grpc;
 use std::sync::Arc;
 
 pub struct Leader {
+    current_term: Term,
     _cancel: tokio::sync::watch::Sender<()>,
+
+    writer: Arc<super::writer::Writer>,
+    storage: crate::config::SharedStorage,
     // TODO: add ack to wait until the previous leader process is finished for sure.
 }
 
@@ -16,6 +24,7 @@ pub struct Args {
     pub msg_queue: tokio::sync::mpsc::Sender<Message>,
     pub commit_index: tokio::sync::watch::Sender<Index>,
     pub storage: crate::config::SharedStorage,
+    pub writer: Arc<super::writer::Writer>,
 }
 
 impl Leader {
@@ -47,7 +56,28 @@ impl Leader {
             cancel: cancel_rx,
         };
         tokio::spawn(syncer.run());
-        Leader { _cancel: cancel_tx }
+        Leader {
+            current_term: args.current_term,
+            _cancel: cancel_tx,
+
+            writer: args.writer,
+            storage: args.storage.clone(),
+        }
+    }
+
+    pub async fn append_entry(&self, entry: Arc<Vec<u8>>) -> Result<(), StorageError> {
+        let _ = self.storage.append_entry(self.current_term, entry).await?;
+        Ok(())
+    }
+
+    pub async fn append_entry_with_response(
+        &self,
+        entry: Arc<Vec<u8>>,
+    ) -> Result<ApplyResponseReceiver, StorageError> {
+        let mut registry = self.writer.suspend_apply().await;
+
+        let entry = self.storage.append_entry(self.current_term, entry).await?;
+        Ok(registry.register_response_channel(entry.index(), self.current_term))
     }
 }
 

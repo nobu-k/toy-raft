@@ -1,6 +1,7 @@
 use std::{net::ToSocketAddrs, sync::Arc};
 
 pub type SharedStorage = Arc<dyn crate::raft::log::Storage + Sync + Send + 'static>;
+pub type SharedStateMachine = Arc<dyn crate::raft::StateMachine + Sync + Send + 'static>;
 
 #[derive(Clone)]
 pub struct Config {
@@ -8,6 +9,7 @@ pub struct Config {
     pub(crate) addr: String,
     pub(crate) peers: Vec<Peer>,
     pub(crate) storage: SharedStorage,
+    pub(crate) state_machine: SharedStateMachine,
 }
 
 pub struct Builder {
@@ -15,6 +17,7 @@ pub struct Builder {
     addr: Option<String>,
     peers: Vec<Peer>,
     storage: Option<SharedStorage>,
+    state_machine: Option<SharedStateMachine>,
 }
 
 impl Config {
@@ -24,6 +27,7 @@ impl Config {
             addr: None,
             peers: vec![],
             storage: None,
+            state_machine: None,
         }
     }
 }
@@ -93,6 +97,7 @@ impl Builder {
             self.validate_id(),
             self.validate_addr(),
             self.validate_peers(),
+            self.validate_state_machine(),
         ]
         .into_iter()
         .filter_map(|e| e.err())
@@ -109,6 +114,7 @@ impl Builder {
             storage: self
                 .storage
                 .unwrap_or_else(|| Arc::new(crate::raft::log::MemoryStorage::new())),
+            state_machine: self.state_machine.unwrap(),
         })
     }
 
@@ -175,6 +181,16 @@ impl Builder {
             Ok(())
         } else {
             Err(errors)
+        }
+    }
+
+    fn validate_state_machine(&self) -> Result<(), Vec<ConfigError>> {
+        if self.state_machine.is_none() {
+            Err(vec![ConfigError::MissingRequiredParameter(
+                "state_machine".to_owned(),
+            )])
+        } else {
+            Ok(())
         }
     }
 }

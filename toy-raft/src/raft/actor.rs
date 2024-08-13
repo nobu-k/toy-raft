@@ -1,6 +1,6 @@
 use crate::grpc;
 
-use super::{leader, log, message::*, vote};
+use super::{leader, log, message::*, vote, StateMachineError};
 use rand::{Rng, SeedableRng};
 use std::sync::Arc;
 use tracing::{error, info, trace};
@@ -13,8 +13,20 @@ pub struct Actor {
 }
 
 impl Actor {
-    pub fn new(config: crate::config::Config) -> Actor {
+    pub async fn new(config: crate::config::Config) -> Result<Actor, StateMachineError> {
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(());
+        let (commit_index_tx, commit_index_rx) = tokio::sync::watch::channel(Index::new(0));
+
+        let writer = Arc::new(
+            super::writer::Writer::start(super::writer::Args {
+                cancel: cancel_rx.clone(),
+                storage: config.storage.clone(),
+                state_machine: config.state_machine.clone(),
+                commit_index: commit_index_rx.clone(),
+            })
+            .await?,
+        );
+
         let (msg_tx, msg_rx) = tokio::sync::mpsc::channel(32);
 
         let peers: Vec<_> = config
@@ -33,7 +45,6 @@ impl Actor {
             .collect();
         let peers = Arc::new(peers);
 
-        let (commit_index_tx, commit_index_rx) = tokio::sync::watch::channel(Index::new(0));
         let actor = ActorProcess {
             state: ActorState {
                 current_term: Term::new(0),
@@ -41,12 +52,12 @@ impl Actor {
                 state: NodeState::Follower,
                 heartbeat_deadline: tokio::time::Instant::now()
                     + tokio::time::Duration::from_millis(150), // TODO: randomize
-                commit_index_tx,
-                commit_index_rx,
             },
             config,
             peers,
             rng: rand::rngs::StdRng::from_entropy(),
+            writer,
+            commit_index_tx,
             leader: None,
             vote: None,
             cancel: cancel_rx,
@@ -55,10 +66,10 @@ impl Actor {
         };
         tokio::spawn(actor.run());
 
-        Actor {
+        Ok(Actor {
             _cancel: cancel_tx,
             message_queue: msg_tx,
-        }
+        })
     }
 
     pub async fn state(&self) -> Result<ActorState, MessageError> {
@@ -107,6 +118,8 @@ struct ActorProcess {
     /// Used to variate the heartbeat timeout.
     rng: rand::rngs::StdRng,
 
+    writer: Arc<super::writer::Writer>,
+    commit_index_tx: tokio::sync::watch::Sender<Index>,
     leader: Option<leader::Leader>,
     vote: Option<vote::Vote>,
 
@@ -344,7 +357,8 @@ impl ActorProcess {
                     msg_queue: self.tx.clone(),
                     peers: self.peers.clone(),
                     storage: self.config.storage.clone(),
-                    commit_index: self.state.commit_index_tx.clone(),
+                    writer: self.writer.clone(),
+                    commit_index: self.commit_index_tx.clone(),
                 }));
             }
             VoteResult::NotGranted {
