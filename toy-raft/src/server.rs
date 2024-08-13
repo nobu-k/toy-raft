@@ -15,7 +15,7 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn new(config: config::Config) -> Result<Server, ServerError> {
+    pub async fn new(config: config::Config) -> Result<Server, ServerError> {
         let addrs: Vec<_> = config
             .addr
             .to_socket_addrs()
@@ -26,7 +26,11 @@ impl Server {
         }
         let addr = addrs[0];
 
-        let actor = Arc::new(raft::Actor::new(config.clone()));
+        let actor = Arc::new(
+            raft::Actor::new(config.clone())
+                .await
+                .map_err(|e| ServerError::ActorError(e))?,
+        );
 
         Ok(Server {
             id: config.id,
@@ -94,6 +98,9 @@ pub enum ServerError {
 
     #[error("too many addresses: {}: {}", .0, .1)]
     TooManyAddresses(usize, String),
+
+    #[error("failed to create actor: {0}")]
+    ActorError(#[source] raft::StateMachineError),
 }
 
 #[tonic::async_trait]

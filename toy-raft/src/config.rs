@@ -139,6 +139,11 @@ impl Builder {
         self
     }
 
+    pub fn state_machine(mut self, state_machine: SharedStateMachine) -> Self {
+        self.state_machine = Some(state_machine);
+        self
+    }
+
     fn validate_id(&self) -> Result<(), Vec<ConfigError>> {
         if self.id.is_none() || self.id.as_ref().unwrap().is_empty() {
             Err(vec![ConfigError::MissingRequiredParameter("id".to_owned())])

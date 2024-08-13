@@ -4,5 +4,6 @@ load("@crates//:defs.bzl", "all_crate_deps")
 rust_binary(
     name = "id-generator",
     srcs = ["src/main.rs"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
     deps = ["//toy-raft"] + all_crate_deps(),
 )

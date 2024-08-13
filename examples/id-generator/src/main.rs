@@ -5,6 +5,29 @@ use http_body_util::BodyExt;
 use prometheus::Encoder;
 use tracing::info;
 
+pub struct IdGenerator {
+    last_applied_index: std::sync::atomic::AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl toy_raft::StateMachine for IdGenerator {
+    async fn apply(
+        &self,
+        entry: toy_raft::log::Entry,
+    ) -> Result<Option<toy_raft::ApplyResponse>, toy_raft::StateMachineError> {
+        self.last_applied_index
+            .store(entry.index().get(), std::sync::atomic::Ordering::SeqCst);
+        Ok(None)
+    }
+
+    async fn last_applied_index(&self) -> Result<toy_raft::Index, toy_raft::StateMachineError> {
+        Ok(toy_raft::Index::new(
+            self.last_applied_index
+                .load(std::sync::atomic::Ordering::SeqCst),
+        ))
+    }
+}
+
 #[derive(Debug, Parser)]
 struct Args {
     /// List of the address of the peer including scheme to connect to (comma separated or one address per flag).
@@ -32,6 +55,9 @@ async fn main() -> anyhow::Result<()> {
         .id(args.id.clone())
         .addr(args.addr.clone())
         .peers(toy_raft::Peer::parse_args(&args.peer)?)
+        .state_machine(std::sync::Arc::new(IdGenerator {
+            last_applied_index: std::sync::atomic::AtomicU64::new(0),
+        }))
         .build()?;
 
     let subscriber = tracing_subscriber::fmt()
@@ -59,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let server = toy_raft::Server::new(config)?;
+    let server = toy_raft::Server::new(config).await?;
     Ok(server.run().await?)
 }
 

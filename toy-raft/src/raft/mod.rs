@@ -8,5 +8,5 @@ mod vote;
 mod writer;
 
 pub use actor::*;
-pub use message::NodeState;
+pub use message::{Index, NodeState, Term};
 pub use state_machine::{ApplyResponse, StateMachine, StateMachineError};
