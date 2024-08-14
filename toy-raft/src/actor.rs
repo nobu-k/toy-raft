@@ -1,9 +1,11 @@
-use crate::grpc;
+use crate::{grpc, state_machine::ApplyResponseReceiver, ApplyResponse};
 
 use super::{leader, log, message::*, vote, StateMachineError};
 use rand::{Rng, SeedableRng};
 use std::sync::Arc;
 use tracing::{error, info, trace};
+
+// TODO: leader election doesn't end when killing a leader while are other nodes are running.
 
 pub struct Actor {
     /// _cancel is to trigger the cancellation of the actor process when the
@@ -76,6 +78,32 @@ impl Actor {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.message_queue.send(Message::GetState(tx)).await?;
         Ok(rx.await?)
+    }
+
+    /// Append a new entry to the log. When require_response is false, this
+    /// method returns immediately after writing the entry to the log even if
+    /// the entry is not applied to the state machine.
+    ///
+    /// This method fails when the node is not a leader.
+    pub async fn append_entry(
+        &self,
+        entry: Arc<Vec<u8>>,
+        require_response: bool,
+    ) -> Result<Result<Option<ApplyResponse>, AppendEntryError>, MessageError> {
+        // TODO: refactor response error type.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.message_queue
+            .send(Message::AppendEntry {
+                entry,
+                require_response,
+                result: tx,
+            })
+            .await?;
+        match rx.await? {
+            Ok(Some(rx)) => Ok(Ok(rx.await?)),
+            Ok(None) => Ok(Ok(None)),
+            Err(e) => Ok(Err(e)),
+        }
     }
 
     pub async fn append_entries(
@@ -183,6 +211,16 @@ impl ActorProcess {
             Message::GetState(result) => {
                 let _ = result.send(self.state.clone());
             }
+            Message::AppendEntry {
+                entry,
+                require_response,
+                result,
+            } => {
+                let response = self.append_entry(entry, require_response).await;
+                if result.send(response).is_err() {
+                    info!("Returning the result of AppendEntry failed");
+                }
+            }
             Message::AppendEntries { request, result } => {
                 let response = self.append_entries(request).await;
                 if result.send(response).is_err() {
@@ -199,6 +237,22 @@ impl ActorProcess {
             }
             Message::VoteCompleted(res) => self.vote_completed(res),
             Message::BackToFollower { term } => self.back_to_follower(term),
+        }
+    }
+
+    async fn append_entry(
+        &self,
+        entry: Arc<Vec<u8>>,
+        require_response: bool,
+    ) -> Result<Option<ApplyResponseReceiver>, AppendEntryError> {
+        match self.leader {
+            Some(ref leader) => Ok(if require_response {
+                leader.append_entry_with_response(entry).await.map(Some)?
+            } else {
+                leader.append_entry(entry).await?;
+                None
+            }),
+            None => Err(AppendEntryError::NotLeader(self.state.voted_for.clone())),
         }
     }
 
@@ -232,6 +286,7 @@ impl ActorProcess {
         };
 
         self.state.current_term = Term::new(request.term);
+        self.state.voted_for = Some(request.leader_id.clone());
 
         // This redundant implementation of reset_heartbeat_timeout is to avoid
         // the borrow checker error.

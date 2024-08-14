@@ -1,4 +1,4 @@
-use crate::grpc;
+use crate::{grpc, log::StorageError, state_machine::ApplyResponseReceiver, StateMachineError};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -76,6 +76,14 @@ pub struct ActorState {
 
 pub enum Message {
     GetState(tokio::sync::oneshot::Sender<ActorState>),
+    AppendEntry {
+        entry: Arc<Vec<u8>>,
+        require_response: bool,
+
+        // TODO: properly define the response type
+        result:
+            tokio::sync::oneshot::Sender<Result<Option<ApplyResponseReceiver>, AppendEntryError>>,
+    },
     AppendEntries {
         request: grpc::AppendEntriesRequest,
         result: tokio::sync::oneshot::Sender<Result<grpc::AppendEntriesResponse, tonic::Status>>,
@@ -102,6 +110,24 @@ pub enum VoteResult {
         vote_term: Term,
         response: grpc::RequestVoteResponse,
     },
+}
+
+/// The error response of the AppendEntry message.
+#[derive(Debug, thiserror::Error)]
+pub enum AppendEntryError {
+    /// The error indicates that the operation to the state machine cannot be
+    /// performed by non-leader nodes. When this error happens, call the
+    /// corresponding operation of the leader node.
+    ///
+    /// This error contains the ID of the leader when available.
+    #[error("operation can only be performed by leader")]
+    NotLeader(Option<String>),
+
+    #[error("failed to write an entry: {0}")]
+    StorageError(#[from] StorageError),
+
+    #[error("failed to apply an entry to the state machine: {0}")]
+    StateMachineError(StateMachineError),
 }
 
 #[derive(Debug, thiserror::Error)]

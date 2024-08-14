@@ -129,7 +129,8 @@ impl CommitIndexSyncer {
             waiters.push(build_future(i, self.match_indexes_watcher[i].clone()));
 
             // Sort the current match indexes and find the median, which means
-            // the majority of the followers have at least that index.
+            // the majority of the followers have at least that index. The
+            // leader's match_index is always the maximum.
             self.match_indexes[i] = *self.match_indexes_watcher[i].borrow();
             sorted.sort_unstable_by_key(|&i| self.match_indexes[i]);
             let new_commit_index = self.match_indexes[sorted[sorted.len() / 2]];
@@ -232,8 +233,9 @@ impl Follower {
     ) -> Result<(), HeartbeatError> {
         let res = res.into_inner();
         if res.success {
-            if *self.match_index.borrow() != self.next_index {
-                if let Err(_) = self.match_index.send(self.next_index) {
+            let matched = self.next_index.prev();
+            if *self.match_index.borrow() != matched {
+                if let Err(_) = self.match_index.send(matched) {
                     // The leader is already gone.
                     return Err(HeartbeatError::Canceled);
                 }

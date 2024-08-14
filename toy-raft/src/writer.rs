@@ -1,6 +1,6 @@
 use std::{cmp, collections::HashMap, sync::Arc};
 
-use tracing::{error, trace};
+use tracing::{error, info, trace};
 
 use super::{
     message::*,
@@ -91,14 +91,17 @@ impl WriterProcess {
         loop {
             let mut backoff = tokio::time::Duration::from_millis(100);
             let commit_index = *self.commit_index.borrow();
-            while self.next_index <= commit_index {
-                if self.apply(self.next_index).await.is_ok() {
-                    self.next_index.inc();
-                    break;
+            if commit_index.get() > 0 {
+                while self.next_index <= commit_index {
+                    if self.apply(self.next_index).await.is_ok() {
+                        self.next_index.inc();
+                        break;
+                    }
+                    tokio::time::sleep(backoff).await;
+                    backoff = cmp::min(backoff * 2, tokio::time::Duration::from_secs(60));
                 }
-                tokio::time::sleep(backoff).await;
-                backoff = cmp::min(backoff * 2, tokio::time::Duration::from_secs(60));
             }
+
             // TODO: garbage collect response channels
             tokio::select! {
                 _ = self.cancel.changed() => break,
@@ -113,7 +116,7 @@ impl WriterProcess {
             Ok(None) => {
                 error!(
                     index = index.get(),
-                    "Failed to get the entry from the storage"
+                    "The entry does not exist in the storage"
                 );
                 return Err(());
             }
