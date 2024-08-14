@@ -127,6 +127,15 @@ impl VoteProcess {
                 vote_granted = granted,
                 "Vote not granted"
             );
+            tokio::select! {
+                _ = self
+                .args
+                .msg_queue
+                .send(Message::VoteCompleted(VoteResult::NotGranted {
+                    vote_term: self.args.current_term,
+                })) => {},
+                _ = self.cancel.changed() => {},
+            }
         }
     }
 
@@ -148,7 +157,7 @@ impl VoteProcess {
                             _ = self
                             .args
                             .msg_queue
-                            .send(Message::VoteCompleted(VoteResult::NotGranted {
+                            .send(Message::VoteCompleted(VoteResult::NewerTermFound {
                                 vote_term: self.args.current_term,
                                 response: res.into_inner(),
                             })) => {},

@@ -4,7 +4,7 @@ use std::{
 };
 
 use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
-use tracing::{error, info_span};
+use tracing::{error, info, info_span};
 
 use crate::{config, grpc, NodeState};
 

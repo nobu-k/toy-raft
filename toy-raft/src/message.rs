@@ -108,6 +108,11 @@ pub enum VoteResult {
         /// The term of the voting process was initiated. Ignore the result when
         /// the value is older than the current term upon receiving.
         vote_term: Term,
+    },
+    NewerTermFound {
+        /// The term of the voting process was initiated. Ignore the result when
+        /// the value is older than the current term upon receiving.
+        vote_term: Term,
         response: grpc::RequestVoteResponse,
     },
 }

@@ -5,8 +5,6 @@ use rand::{Rng, SeedableRng};
 use std::sync::Arc;
 use tracing::{error, info, trace};
 
-// TODO: leader election doesn't end when killing a leader while are other nodes are running.
-
 pub struct Actor {
     /// _cancel is to trigger the cancellation of the actor process when the
     /// Actor is dropped.
@@ -326,6 +324,45 @@ impl ActorProcess {
         }
     }
 
+    async fn request_vote(&mut self) {
+        let (last_log_index, last_log_term) = match self.config.storage.get_last_entry().await {
+            Ok(Some(entry)) => (entry.index(), entry.term()),
+            Ok(None) => (Index::new(0), Term::new(0)),
+            Err(e) => {
+                error!(
+                    error = e.to_string(),
+                    "Failed to get the last entry of the log before request vote, keep being a follower"
+                );
+                self.reset_heartbeat_timeout();
+                return;
+            }
+        };
+
+        self.state.current_term.inc();
+        self.state.state = NodeState::Candidate;
+        self.state.voted_for = None;
+        self.reset_heartbeat_timeout();
+
+        let vote = self.vote.take();
+        if let Some(mut vote) = vote {
+            if vote.is_active() {
+                info!(
+                    vote_term = vote.vote_term().get(),
+                    "Canceling the previous vote process"
+                );
+                vote.cancel().await;
+            }
+        }
+        self.vote = Some(vote::Vote::start(vote::Args {
+            id: self.config.id.clone(),
+            current_term: self.state.current_term,
+            last_log_index,
+            last_log_term,
+            msg_queue: self.tx.clone(),
+            peers: self.peers.clone(),
+        }));
+    }
+
     async fn grant_vote(&mut self, request: grpc::RequestVoteRequest) -> bool {
         if request.term <= self.state.current_term.get() {
             return false;
@@ -368,6 +405,7 @@ impl ActorProcess {
 
         self.state.current_term = Term::new(request.term);
         self.state.voted_for = Some(request.candidate_id.clone());
+        self.reset_heartbeat_timeout();
 
         match self.state.state {
             NodeState::Follower => {}
@@ -416,7 +454,18 @@ impl ActorProcess {
                     commit_index: self.commit_index_tx.clone(),
                 }));
             }
-            VoteResult::NotGranted {
+            VoteResult::NotGranted { vote_term } => {
+                if ignore_old(vote_term) {
+                    return;
+                }
+                self.state.state = NodeState::Follower;
+                info!(
+                    term = self.state.current_term.get(),
+                    "Vote not granted, back to a follower"
+                );
+                self.reset_heartbeat_timeout();
+            }
+            VoteResult::NewerTermFound {
                 vote_term,
                 response: res,
             } => {
@@ -426,48 +475,13 @@ impl ActorProcess {
 
                 self.state.current_term = Term::new(res.term);
                 self.state.state = NodeState::Follower;
-                info!(term = res.term, "Vote not granted, back to a follower");
-                self.reset_heartbeat_timeout();
-            }
-        }
-    }
-
-    async fn request_vote(&mut self) {
-        let (last_log_index, last_log_term) = match self.config.storage.get_last_entry().await {
-            Ok(Some(entry)) => (entry.index(), entry.term()),
-            Ok(None) => (Index::new(0), Term::new(0)),
-            Err(e) => {
-                error!(
-                    error = e.to_string(),
-                    "Failed to get the last entry of the log before request vote, keep being a follower"
-                );
-                self.reset_heartbeat_timeout();
-                return;
-            }
-        };
-
-        self.state.current_term.inc();
-        self.state.state = NodeState::Candidate;
-        self.reset_heartbeat_timeout();
-
-        let vote = self.vote.take();
-        if let Some(mut vote) = vote {
-            if vote.is_active() {
                 info!(
-                    vote_term = vote.vote_term().get(),
-                    "Canceling the previous vote process"
+                    term = res.term,
+                    "Vote not granted but a node with a newer term found, back to a follower"
                 );
-                vote.cancel().await;
+                self.reset_heartbeat_timeout();
             }
         }
-        self.vote = Some(vote::Vote::start(vote::Args {
-            id: self.config.id.clone(),
-            current_term: self.state.current_term,
-            last_log_index,
-            last_log_term,
-            msg_queue: self.tx.clone(),
-            peers: self.peers.clone(),
-        }));
     }
 
     fn back_to_follower(&mut self, term: Term) {
