@@ -1,7 +1,7 @@
 use super::message::*;
 use crate::{grpc, metrics};
 use std::sync::Arc;
-use tracing::{info, info_span, warn};
+use tracing::{info, info_span, warn, Instrument};
 
 pub struct Vote {
     vote_term: Term,
@@ -69,16 +69,16 @@ struct VoteProcess {
 
 impl VoteProcess {
     async fn run(mut self) {
-        // TODO: this span doesn't seem to be dropped properly
-        /*
-        let span = info_span!("Requesting votes", term = args.current_term);
-        let _enter = span.enter();
-        */
-        info!(
+        let span = info_span!(
+            "request_vote",
             term = self.args.current_term.get(),
-            peers = self.args.peers.len(),
-            "Initiating RequestVote RPC",
+            peers = self.args.peers.len()
         );
+        self.run_impl().instrument(span).await;
+    }
+
+    async fn run_impl(&mut self) {
+        info!("Initiating RequestVote RPC");
 
         let nodes = self.args.peers.len() + 1; // including self
         let mut set = self.send_requests();
@@ -105,12 +105,7 @@ impl VoteProcess {
         }
 
         if granted > nodes / 2 {
-            info!(
-                term = self.args.current_term.get(),
-                peers = self.args.peers.len(),
-                vote_granted = granted,
-                "Vote granted"
-            );
+            info!(vote_granted = granted, "Vote granted");
             tokio::select! {
                 _ = self
                 .args
@@ -121,12 +116,7 @@ impl VoteProcess {
                 _ = self.cancel.changed() => {},
             }
         } else {
-            info!(
-                term = self.args.current_term.get(),
-                peers = self.args.peers.len(),
-                vote_granted = granted,
-                "Vote not granted"
-            );
+            info!(vote_granted = granted, "Vote not granted");
             tokio::select! {
                 _ = self
                 .args
