@@ -88,6 +88,13 @@ impl Storage for MemoryStorage {
                         actual_term: Some(entry.term()),
                     });
                 }
+
+                if new_entries.is_empty() {
+                    // This is a heartbeat message. The truncation MUST NOT be
+                    // performed.
+                    return Ok(());
+                }
+
                 entries.truncate(prev_entry + 1);
                 entries.extend(new_entries);
                 Ok(())
@@ -222,7 +229,7 @@ mod tests {
         }
 
         match storage
-            .append_entries(Index::new(10), Term::new(2), entries)
+            .append_entries(Index::new(10), Term::new(2), entries.clone())
             .await
         {
             Err(StorageError::InconsistentPreviousEntry {
@@ -235,6 +242,17 @@ mod tests {
             Err(_) => panic!("unexpected error"),
             Ok(_) => panic!("unexpected success"),
         }
+
+        match storage
+            .append_entries(Index::new(1), Term::new(1), vec![])
+            .await
+        {
+            Err(_) => panic!("unexpected error"),
+            Ok(_) => {}
+        }
+
+        let entry = storage.get_entry(Index::new(4)).await.unwrap().unwrap();
+        assert_eq!(entry, entries[1], "no truncation should be performed");
     }
 
     #[tokio::test]

@@ -66,6 +66,11 @@ pub trait Storage {
     /// last entry, the storage will delete the existing entries after the
     /// prev_index and append the new entries.
     ///
+    /// The storage MUST NOT perform log truncation when new_entries is empty
+    /// because it is just a heartbeat. In that case, the storage only needs to
+    /// check if the prev_index and prev_term pair matches the corresponding
+    /// entry in the log.
+    ///
     /// It returns StorageError::InconsistentPreviousEntry when the prev_index
     /// does not exist or exists but the term does not match.
     // TODO: return the potentially matching index or term to optimize initialization process at the leader.
@@ -88,6 +93,7 @@ pub struct Entry {
 
     /// The data of the entry. The content can be empty.
     data: Arc<Vec<u8>>,
+    // TODO: add a response channel of the state machine.
 }
 
 impl Entry {
