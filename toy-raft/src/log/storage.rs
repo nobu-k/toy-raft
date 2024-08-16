@@ -1,6 +1,7 @@
 use crate::{
     grpc,
     message::{Index, Term},
+    state_machine::{ApplyResponseReceiver, ApplyResponseSender},
 };
 use std::sync::Arc;
 
@@ -58,9 +59,23 @@ pub trait Storage {
     /// does not exist.
     async fn get_entry(&self, index: Index) -> Result<Option<Entry>, StorageError>;
 
+    /// Another version of get_entry used when the entry needs to be applied to
+    /// the state machine. The storage must return the channel, which is
+    /// internally managed, to send the response from the state machine to the
+    /// original requester.
+    async fn get_entry_for_apply(
+        &self,
+        index: Index,
+    ) -> Result<Option<(Entry, Option<ApplyResponseSender>)>, StorageError>;
+
     /// Appends a new entry to the log. It returns the index information of the
     /// new entry. This method is usually called by the leader.
-    async fn append_entry(&self, term: Term, entry: Arc<Vec<u8>>) -> Result<Entry, StorageError>;
+    async fn append_entry(
+        &self,
+        term: Term,
+        entry: Arc<Vec<u8>>,
+        require_response: bool,
+    ) -> Result<(Entry, Option<ApplyResponseReceiver>), StorageError>;
 
     /// Append the entries provided by the leader. If the prev_index is not the
     /// last entry, the storage will delete the existing entries after the
@@ -80,6 +95,10 @@ pub trait Storage {
         prev_term: Term,
         new_entries: Vec<Entry>,
     ) -> Result<(), StorageError>;
+
+    // TODO: add method for compaction using last_applied_index and
+    // compaction_index. This method can also perform the garbage collection of
+    // response channels.
 }
 
 /// Entry represents a single log entry.

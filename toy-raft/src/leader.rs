@@ -12,8 +12,8 @@ pub struct Leader {
     current_term: Term,
     _cancel: tokio::sync::watch::Sender<()>,
 
-    writer: Arc<super::writer::Writer>,
     storage: crate::config::SharedStorage,
+    storage_updated: tokio::sync::watch::Sender<()>,
     // TODO: add ack to wait until the previous leader process is finished for sure.
 }
 
@@ -24,12 +24,12 @@ pub struct Args {
     pub msg_queue: tokio::sync::mpsc::Sender<Message>,
     pub commit_index: tokio::sync::watch::Sender<Index>,
     pub storage: crate::config::SharedStorage,
-    pub writer: Arc<super::writer::Writer>,
 }
 
 impl Leader {
     pub fn start(args: Args) -> Self {
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(());
+        let (storage_tx, storage_rx) = tokio::sync::watch::channel(());
         let mut watchers = Vec::with_capacity(args.peers.len());
 
         for peer in args.peers.iter() {
@@ -39,6 +39,7 @@ impl Leader {
             let follower = Follower {
                 leader_id: args.id.clone(),
                 current_term: args.current_term,
+                storage_updated: storage_rx.clone(),
                 cli: peer.clone(),
                 next_index: Index::new(1),
                 match_index: tx,
@@ -60,24 +61,22 @@ impl Leader {
             current_term: args.current_term,
             _cancel: cancel_tx,
 
-            writer: args.writer,
             storage: args.storage.clone(),
+            storage_updated: storage_tx,
         }
     }
 
-    pub async fn append_entry(&self, entry: Arc<Vec<u8>>) -> Result<(), StorageError> {
-        let _ = self.storage.append_entry(self.current_term, entry).await?;
-        Ok(())
-    }
-
-    pub async fn append_entry_with_response(
+    pub async fn append_entry(
         &self,
         entry: Arc<Vec<u8>>,
-    ) -> Result<ApplyResponseReceiver, StorageError> {
-        let mut registry = self.writer.suspend_apply().await;
-
-        let entry = self.storage.append_entry(self.current_term, entry).await?;
-        Ok(registry.register_response_channel(entry.index(), self.current_term))
+        require_response: bool,
+    ) -> Result<Option<ApplyResponseReceiver>, StorageError> {
+        let (_, rx) = self
+            .storage
+            .append_entry(self.current_term, entry, require_response)
+            .await?;
+        let _ = self.storage_updated.send(());
+        Ok(rx)
     }
 }
 
@@ -148,6 +147,7 @@ struct Follower {
     leader_id: String,
     current_term: Term,
     cli: PeerClient,
+    storage_updated: tokio::sync::watch::Receiver<()>,
 
     next_index: Index,
     match_index: tokio::sync::watch::Sender<Index>,
@@ -181,6 +181,9 @@ impl Follower {
                         Err(HeartbeatError::ReceiveFailure) => break, // Back to the outer loop.
                         Err(_) => return,
                     },
+                    _ = self.storage_updated.changed() => {
+                        self.send_log_entries().await;
+                    }
                     _ = self.cancel.changed() => {
                         return;
                     }
@@ -258,6 +261,18 @@ impl Follower {
             self.next_index.dec();
         }
         Ok(())
+    }
+
+    async fn send_log_entries(&mut self) {
+        // TODO: when reading from the storage takes time, it can happen that
+        // the follower times out and becomes a candidate. However, having a
+        // separate actor to send heartbeats can result in log truncation.
+        // Introducing a lock to call append_entries would be a solution?
+
+        // TODO: implement
+        // TODO: load entries after next_index.
+
+        // TODO: think of what to do if append_entries failed. Retry with backoff will be necessary with heartbeat.
     }
 
     async fn back_to_follower(&mut self, term: Term) -> Result<(), HeartbeatError> {

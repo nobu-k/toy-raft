@@ -17,7 +17,7 @@ impl Actor {
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(());
         let (commit_index_tx, commit_index_rx) = tokio::sync::watch::channel(Index::new(0));
 
-        let writer = Arc::new(
+        let _writer = Arc::new(
             super::writer::Writer::start(super::writer::Args {
                 cancel: cancel_rx.clone(),
                 storage: config.storage.clone(),
@@ -56,7 +56,6 @@ impl Actor {
             config,
             peers,
             rng: rand::rngs::StdRng::from_entropy(),
-            writer,
             commit_index_tx,
             leader: None,
             vote: None,
@@ -144,7 +143,6 @@ struct ActorProcess {
     /// Used to variate the heartbeat timeout.
     rng: rand::rngs::StdRng,
 
-    writer: Arc<super::writer::Writer>,
     commit_index_tx: tokio::sync::watch::Sender<Index>,
     leader: Option<leader::Leader>,
     vote: Option<vote::Vote>,
@@ -244,12 +242,7 @@ impl ActorProcess {
         require_response: bool,
     ) -> Result<Option<ApplyResponseReceiver>, AppendEntryError> {
         match self.leader {
-            Some(ref leader) => Ok(if require_response {
-                leader.append_entry_with_response(entry).await.map(Some)?
-            } else {
-                leader.append_entry(entry).await?;
-                None
-            }),
+            Some(ref leader) => Ok(leader.append_entry(entry, require_response).await?),
             None => Err(AppendEntryError::NotLeader(self.state.voted_for.clone())),
         }
     }
@@ -450,7 +443,6 @@ impl ActorProcess {
                     msg_queue: self.tx.clone(),
                     peers: self.peers.clone(),
                     storage: self.config.storage.clone(),
-                    writer: self.writer.clone(),
                     commit_index: self.commit_index_tx.clone(),
                 }));
             }

@@ -6,6 +6,7 @@ pub type BoxedError = Box<dyn std::error::Error + Send + Sync + 'static>;
 pub type ApplyResponse = Arc<dyn std::any::Any + Send + Sync + 'static>;
 
 pub type ApplyResponseReceiver = tokio::sync::oneshot::Receiver<Option<ApplyResponse>>;
+pub type ApplyResponseSender = tokio::sync::oneshot::Sender<Option<ApplyResponse>>;
 
 #[async_trait::async_trait]
 pub trait StateMachine {
