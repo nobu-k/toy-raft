@@ -74,6 +74,14 @@ impl Storage for MemoryStorage {
         }
     }
 
+    async fn get_entries_after(&self, index: Index) -> Result<Vec<Entry>, StorageError> {
+        let entries = self.entries.read().await;
+        match search_entry(&entries, index.next()) {
+            Some(e) => Ok(entries[e..].to_vec()),
+            None => Ok(Vec::new()),
+        }
+    }
+
     async fn append_entry(
         &self,
         term: Term,

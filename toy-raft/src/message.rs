@@ -34,6 +34,10 @@ impl Index {
         Index(self.0 - 1)
     }
 
+    pub fn next(&self) -> Self {
+        Index(self.0 + 1)
+    }
+
     pub fn dec(&mut self) {
         self.0 -= 1;
     }

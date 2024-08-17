@@ -68,6 +68,11 @@ pub trait Storage {
         index: Index,
     ) -> Result<Option<(Entry, Option<ApplyResponseSender>)>, StorageError>;
 
+    /// Returns the entries after the given index. The entry at the index
+    /// position will not be included.
+    // TODO: add some configuration such as read as many entries as possible in given time or until the size limit.
+    async fn get_entries_after(&self, index: Index) -> Result<Vec<Entry>, StorageError>;
+
     /// Appends a new entry to the log. It returns the index information of the
     /// new entry. This method is usually called by the leader.
     async fn append_entry(

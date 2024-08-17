@@ -57,6 +57,7 @@ impl Actor {
             peers,
             rng: rand::rngs::StdRng::from_entropy(),
             commit_index_tx,
+            commit_index_rx,
             leader: None,
             vote: None,
             cancel: cancel_rx,
@@ -144,6 +145,7 @@ struct ActorProcess {
     rng: rand::rngs::StdRng,
 
     commit_index_tx: tokio::sync::watch::Sender<Index>,
+    commit_index_rx: tokio::sync::watch::Receiver<Index>,
     leader: Option<leader::Leader>,
     vote: Option<vote::Vote>,
 
@@ -276,6 +278,14 @@ impl ActorProcess {
             }
         };
 
+        if self.state.voted_for.is_none() {
+            info!(
+                term = self.state.current_term.get(),
+                new_term = request.term,
+                leader_id = request.leader_id,
+                "Found a new leader",
+            )
+        }
         self.state.current_term = Term::new(request.term);
         self.state.voted_for = Some(request.leader_id.clone());
 
@@ -294,10 +304,15 @@ impl ActorProcess {
             )
             .await
         {
-            Ok(()) => Ok(grpc::AppendEntriesResponse {
-                term: self.state.current_term.get(),
-                success: true,
-            }),
+            Ok(()) => {
+                self.commit_index_tx
+                    .send(Index::new(request.leader_commit))
+                    .unwrap();
+                Ok(grpc::AppendEntriesResponse {
+                    term: self.state.current_term.get(),
+                    success: true,
+                })
+            }
             Err(log::StorageError::InconsistentPreviousEntry {
                 expected_term,
                 actual_term,
@@ -443,7 +458,8 @@ impl ActorProcess {
                     msg_queue: self.tx.clone(),
                     peers: self.peers.clone(),
                     storage: self.config.storage.clone(),
-                    commit_index: self.commit_index_tx.clone(),
+                    commit_index_tx: self.commit_index_tx.clone(),
+                    commit_index_rx: self.commit_index_rx.clone(),
                 }));
             }
             VoteResult::NotGranted { vote_term } => {

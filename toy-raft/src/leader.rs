@@ -22,7 +22,8 @@ pub struct Args {
     pub current_term: Term,
     pub peers: Arc<Vec<PeerClient>>,
     pub msg_queue: tokio::sync::mpsc::Sender<Message>,
-    pub commit_index: tokio::sync::watch::Sender<Index>,
+    pub commit_index_tx: tokio::sync::watch::Sender<Index>,
+    pub commit_index_rx: tokio::sync::watch::Receiver<Index>,
     pub storage: crate::config::SharedStorage,
 }
 
@@ -40,6 +41,7 @@ impl Leader {
                 leader_id: args.id.clone(),
                 current_term: args.current_term,
                 storage_updated: storage_rx.clone(),
+                commit_index: args.commit_index_rx.clone(),
                 cli: peer.clone(),
                 next_index: Index::new(1),
                 match_index: tx,
@@ -53,7 +55,7 @@ impl Leader {
         let syncer = CommitIndexSyncer {
             match_indexes_watcher: watchers,
             match_indexes: vec![Index::new(0); args.peers.len()],
-            commit_index: args.commit_index,
+            commit_index: args.commit_index_tx.clone(),
             cancel: cancel_rx,
         };
         tokio::spawn(syncer.run());
@@ -151,6 +153,7 @@ struct Follower {
 
     next_index: Index,
     match_index: tokio::sync::watch::Sender<Index>,
+    commit_index: tokio::sync::watch::Receiver<Index>,
 
     storage: crate::config::SharedStorage,
     // TODO: use watch to notify that there's new log entry. The value should be the latest index.
@@ -161,12 +164,46 @@ struct Follower {
 impl Follower {
     async fn run(mut self) {
         loop {
-            // TODO: wait for the connection
+            if let Err(e) = self.wait_for_connection().await {
+                error!(
+                    error = e.to_string(),
+                    id = *self.cli.id,
+                    "Failed to establish a connection to the follower, canceling the leader process"
+                );
 
-            // loop {
-            // TODO: locate the latest match index
-            // TODO: break the loop if matched
-            // }
+                if let AppendEntriesError::BackToFollower(term) = e {
+                    // Going back to the follower as soon as possible. This
+                    // operation is idempotent, so multiple followers can send
+                    // the same message.
+                    tokio::select! {
+                        _ = self.cancel.changed() => {},
+
+                        // The leader will eventually go back to the follower
+                        // even if sending this message fails because the target
+                        // follower will have an election timeout.
+                        _ = self.msg_queue.send(Message::BackToFollower { term: term }) => {},
+                    };
+                }
+                return;
+            }
+
+            if let Err(e) = self.find_latest_match_index().await {
+                error!(
+                    error = e.to_string(),
+                    id = *self.cli.id,
+                    "Failed to find the latest match index"
+                );
+
+                // Going back to the beginning of the loop for error handling on
+                // the next heartbeat.
+                continue;
+            }
+
+            info!(
+                follower_id = *self.cli.id,
+                match_index = self.match_index.borrow().get(),
+                "Found the latest match index of the follower",
+            );
 
             // TODO: initiate install snapshot if needed
 
@@ -174,16 +211,22 @@ impl Follower {
             // every time they receive a message right before they return the
             // response.
             loop {
+                if let Err(e) = self.send_all_log_entries().await {
+                    error!(
+                        error = e.to_string(),
+                        id = *self.cli.id,
+                        "Failed to send log entries to the follower, trying to recover"
+                    );
+                    break;
+                }
+
                 let heartbeat = tokio::time::sleep(tokio::time::Duration::from_millis(50));
                 tokio::select! {
                     _ = heartbeat => match self.send_heartbeat().await {
                         Ok(()) => {},
-                        Err(HeartbeatError::ReceiveFailure) => break, // Back to the outer loop.
-                        Err(_) => return,
+                        Err(_) => break, // Let wait_for_connection take care of the error.
                     },
-                    _ = self.storage_updated.changed() => {
-                        self.send_log_entries().await;
-                    }
+                    _ = self.storage_updated.changed() => {}, // Continue the loop.
                     _ = self.cancel.changed() => {
                         return;
                     }
@@ -192,39 +235,73 @@ impl Follower {
         }
     }
 
-    async fn send_heartbeat(&mut self) -> Result<(), HeartbeatError> {
+    async fn wait_for_connection(&mut self) -> Result<(), AppendEntriesError> {
+        loop {
+            match self.send_heartbeat().await {
+                Ok(()) => return Ok(()),
+                Err(AppendEntriesError::ReceiveFailure) => {}
+
+                // The connection itself is fine. Call find_latest_match_index
+                // in the next step to align the log index with the follower.
+                Err(AppendEntriesError::LastIndexMismatch) => return Ok(()),
+                Err(e) => return Err(e),
+            }
+
+            // DO NOT perform exponential backoff that can become longer than
+            // the election timeout. Otherwise, a node that just came back from
+            // a failure will immediately take over the leader if the log is not
+            // update.
+            tokio::select! {
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {},
+                _ = self.cancel.changed() => return Err(AppendEntriesError::Canceled),
+            }
+        }
+    }
+
+    async fn find_latest_match_index(&mut self) -> Result<(), AppendEntriesError> {
+        // TODO: optimize the match index discovery.
+        loop {
+            // TODO: need some sleep?
+            match self.send_heartbeat().await {
+                Ok(()) => return Ok(()),
+                Err(AppendEntriesError::LastIndexMismatch) => {} // Try next heartbeat.
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    async fn send_heartbeat(&mut self) -> Result<(), AppendEntriesError> {
         let prev_log_term = match self.storage.get_entry(self.next_index.prev()).await {
             Ok(Some(entry)) => entry.term(),
             Ok(None) => Term::new(0),
+            // TODO: handle the case that the corresponding entry is compacted
+            // and missing. In such a case, the leader should install the
+            // snapshot to the follower first.
             Err(e) => {
                 error!(
                     error = e.to_string(),
                     "Failed to get the previous log term from the storage"
                 );
-                let _ = self.back_to_follower(self.current_term).await;
-                return Err(HeartbeatError::StorageError(
-                    "failed to get the previous log term from the storage",
-                    e,
-                ));
+                return Err(AppendEntriesError::BackToFollower(self.current_term));
             }
         };
         let mut request = tonic::Request::new(grpc::AppendEntriesRequest {
             leader_id: self.leader_id.clone(),
             term: self.current_term.get(),
             entries: vec![], // TODO: zero copy
-            leader_commit: 0,
+            leader_commit: self.commit_index.borrow().get(),
             prev_log_index: self.next_index.prev().get(),
             prev_log_term: prev_log_term.get(),
         });
         request.set_timeout(tokio::time::Duration::from_millis(50)); // TODO: customize
 
         tokio::select! {
-            _ = self.cancel.changed() => return Err(HeartbeatError::Canceled),
+            _ = self.cancel.changed() => return Err(AppendEntriesError::Canceled),
             res = self.cli.client.append_entries(request) => match res {
                 Ok(res) => self.handle_heartbeat_response(res).await,
                 Err(e) => {
                     super::metrics::inc_peer_receive_failure(&self.cli.id, e.code());
-                    Err(HeartbeatError::ReceiveFailure)
+                    Err(AppendEntriesError::ReceiveFailure)
                 }
             }
         }
@@ -233,60 +310,166 @@ impl Follower {
     async fn handle_heartbeat_response(
         &mut self,
         res: tonic::Response<grpc::AppendEntriesResponse>,
-    ) -> Result<(), HeartbeatError> {
+    ) -> Result<(), AppendEntriesError> {
         let res = res.into_inner();
         if res.success {
             let matched = self.next_index.prev();
             if *self.match_index.borrow() != matched {
                 if let Err(_) = self.match_index.send(matched) {
                     // The leader is already gone.
-                    return Err(HeartbeatError::Canceled);
+                    return Err(AppendEntriesError::Canceled);
                 }
             }
             return Ok(());
         }
 
         if res.term > self.current_term.get() {
-            return self.back_to_follower(Term::new(res.term)).await;
+            return Err(AppendEntriesError::BackToFollower(Term::new(res.term)));
         }
 
         if self.next_index.get() == 1 {
             error!(
+                error = "the first index does not match",
                 id = *self.cli.id,
                 "The peer does not implement the protocol correctly"
             );
-            return Err(HeartbeatError::ReceiveFailure);
-        } else {
-            // TODO: optimize by having a peer return the latest possible log index.
-            self.next_index.dec();
+            return Err(AppendEntriesError::InvalidProtocol);
         }
+
+        // TODO: optimize by having a peer return the latest possible log index.
+        self.next_index.dec();
+        Err(AppendEntriesError::LastIndexMismatch)
+    }
+
+    async fn send_all_log_entries(&mut self) -> Result<(), AppendEntriesError> {
+        let last_index = match self.storage.get_last_entry().await {
+            Ok(Some(last)) => last.index(),
+            Ok(None) => {
+                return Ok(());
+            }
+            Err(e) => {
+                error!(
+                    error = e.to_string(),
+                    "Failed to get the last entry from the storage"
+                );
+                return Err(AppendEntriesError::StorageError(
+                    "failed to get the last entry from the storage",
+                    e,
+                ));
+            }
+        };
+
+        // send_log_entry_batch might not be able to send all the entries
+        // missing on the follower at once. So we need to call it multiple
+        // times.
+        //
+        // The storage might also get new entries while sending the entries, but
+        // this loop doesn't have to take care of it because it'll be processed
+        // in the next iteration since the storage_updated watch will be
+        // triggered.
+        while self.next_index < last_index {
+            match self.send_log_entry_batch().await {
+                Ok(()) => {}
+                Err(AppendEntriesError::NoEntryToSend) => break,
+                Err(e) => return Err(e),
+            }
+        }
+
         Ok(())
     }
 
-    async fn send_log_entries(&mut self) {
-        // TODO: when reading from the storage takes time, it can happen that
-        // the follower times out and becomes a candidate. However, having a
-        // separate actor to send heartbeats can result in log truncation.
-        // Introducing a lock to call append_entries would be a solution?
+    async fn send_log_entry_batch(&mut self) -> Result<(), AppendEntriesError> {
+        // TODO: this code has an issue that a follower times out if it takes
+        // too long to read entries from the log. We might need to send
+        // heartbeats in parallel.
 
-        // TODO: implement
-        // TODO: load entries after next_index.
+        // TODO: might be good to send a heartbeat to reset the timeout.
 
-        // TODO: think of what to do if append_entries failed. Retry with backoff will be necessary with heartbeat.
-    }
-
-    async fn back_to_follower(&mut self, term: Term) -> Result<(), HeartbeatError> {
-        tokio::select! {
-            _ = self.cancel.changed() => return Err(HeartbeatError::Canceled),
-            _ = self.msg_queue.send(Message::BackToFollower { term: term }) => return Err(HeartbeatError::BackToFollower),
+        // TODO: limit the time and size of entries.
+        let entries = match self.storage.get_entries_after(self.next_index.prev()).await {
+            Ok(entries) => entries,
+            Err(e) => {
+                error!(
+                    error = e.to_string(),
+                    index = self.next_index.prev().get(),
+                    "Failed to get entries from the storage"
+                );
+                // In this failure case, this actor goes back to the outer loop
+                // of the run method. If it gets the same error again, it goes
+                // back to the follower. send_all_log_entries will be retried
+                // after the initial condition check.
+                return Err(AppendEntriesError::StorageError("failed to get entries", e));
+            }
         };
+        if entries.is_empty() {
+            return Err(AppendEntriesError::NoEntryToSend);
+        }
+
+        let mut request = tonic::Request::new(grpc::AppendEntriesRequest {
+            leader_id: self.leader_id.clone(),
+            term: self.current_term.get(),
+            entries: entries
+                .iter()
+                .map(|e| grpc::LogEntry {
+                    index: e.index().get(),
+                    term: e.term().get(),
+                    data: (*e.data()).clone(), // TODO: zero-copy
+                })
+                .collect(),
+            leader_commit: self.commit_index.borrow().get(),
+            prev_log_index: self.next_index.prev().get(),
+            prev_log_term: entries.first().map_or(0, |e| e.term().get()),
+        });
+
+        // Timeout can be long because the follower's election timeout will not
+        // happen while it's processing the append_entries request.
+        request.set_timeout(tokio::time::Duration::from_secs(3));
+
+        let res = tokio::select! {
+            _ = self.cancel.changed() => return Err(AppendEntriesError::Canceled),
+            res = self.cli.client.append_entries(request) => match res {
+                Ok(res) => res.into_inner(),
+                Err(e) => {
+                    super::metrics::inc_peer_receive_failure(&self.cli.id, e.code());
+                    // The follower might have been disconnected, so going back
+                    // to the outer loop.
+
+                    // TODO: take care of other failures.
+                    return Err(AppendEntriesError::ReceiveFailure);
+                },
+            }
+        };
+
+        if res.success {
+            let matched = entries.last().unwrap().index();
+            self.next_index = matched.next();
+            if let Err(_) = self.match_index.send(matched) {
+                // The leader is already gone.
+                return Err(AppendEntriesError::Canceled);
+            }
+            return Ok(());
+        }
+
+        if res.term > self.current_term.get() {
+            return Err(AppendEntriesError::BackToFollower(Term::new(res.term)));
+        }
+
+        error!(
+            error = "previously matched index does not match now",
+            id = *self.cli.id,
+            "The peer does not implement the protocol correctly"
+        );
+        Err(AppendEntriesError::InvalidProtocol)
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-enum HeartbeatError {
+enum AppendEntriesError {
     #[error("failed to receive a heartbeat response")]
     ReceiveFailure,
+
+    #[error("the follower implements an invalid Raft protocol")]
+    InvalidProtocol,
 
     #[error("{0}: {1}")]
     StorageError(&'static str, #[source] log::StorageError),
@@ -295,5 +478,11 @@ enum HeartbeatError {
     Canceled,
 
     #[error("need to back to follower")]
-    BackToFollower,
+    BackToFollower(Term),
+
+    #[error("no entry to send")]
+    NoEntryToSend,
+
+    #[error("last index mismatch")]
+    LastIndexMismatch,
 }
