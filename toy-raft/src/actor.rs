@@ -254,6 +254,15 @@ impl ActorProcess {
         request: grpc::AppendEntriesRequest,
     ) -> Result<grpc::AppendEntriesResponse, tonic::Status> {
         if request.term < self.state.current_term.get() {
+            info!(
+                leader_id = self
+                    .state
+                    .voted_for
+                    .as_ref()
+                    .map(|s| s.as_str())
+                    .unwrap_or(""),
+                "The leader is stale"
+            );
             // The term is too old, so don't reset the heartbeat timeout here.
             return Ok(grpc::AppendEntriesResponse {
                 term: self.state.current_term.get(),
@@ -322,6 +331,11 @@ impl ActorProcess {
                 expected_term,
                 actual_term,
             }) => {
+                info!(
+                    expected_term = expected_term.get(),
+                    actual_term = actual_term.unwrap_or(Term::new(0)).get(),
+                    "Log inconsistency detected"
+                );
                 // TODO: return a hint to the leader for quicker recovery.
                 Ok(grpc::AppendEntriesResponse {
                     term: self.state.current_term.get(),

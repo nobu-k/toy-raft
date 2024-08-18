@@ -316,12 +316,14 @@ impl Follower {
         let res = res.into_inner();
         if res.success {
             let matched = self.next_index.prev();
-            if *self.match_index.borrow() != matched {
-                if let Err(_) = self.match_index.send(matched) {
-                    // The leader is already gone.
-                    return Err(AppendEntriesError::Canceled);
+            self.match_index.send_if_modified(|index| {
+                if *index != matched {
+                    *index = matched;
+                    true
+                } else {
+                    false
                 }
-            }
+            });
             return Ok(());
         }
 
@@ -388,21 +390,22 @@ impl Follower {
         // TODO: might be good to send a heartbeat to reset the timeout.
 
         // TODO: limit the time and size of entries.
-        let entries = match self.storage.get_entries_after(self.next_index.prev()).await {
-            Ok(entries) => entries,
-            Err(e) => {
-                error!(
-                    error = e.to_string(),
-                    index = self.next_index.prev().get(),
-                    "Failed to get entries from the storage"
-                );
-                // In this failure case, this actor goes back to the outer loop
-                // of the run method. If it gets the same error again, it goes
-                // back to the follower. send_all_log_entries will be retried
-                // after the initial condition check.
-                return Err(AppendEntriesError::StorageError("failed to get entries", e));
-            }
-        };
+        let (entries, prev_log_term) =
+            match self.storage.get_entries_after(self.next_index.prev()).await {
+                Ok(entries) => entries,
+                Err(e) => {
+                    error!(
+                        error = e.to_string(),
+                        index = self.next_index.prev().get(),
+                        "Failed to get entries from the storage"
+                    );
+                    // In this failure case, this actor goes back to the outer loop
+                    // of the run method. If it gets the same error again, it goes
+                    // back to the follower. send_all_log_entries will be retried
+                    // after the initial condition check.
+                    return Err(AppendEntriesError::StorageError("failed to get entries", e));
+                }
+            };
         if entries.is_empty() {
             return Err(AppendEntriesError::NoEntryToSend);
         }
@@ -420,7 +423,7 @@ impl Follower {
                 .collect(),
             leader_commit: self.commit_index.borrow().get(),
             prev_log_index: self.next_index.prev().get(),
-            prev_log_term: entries.first().map_or(0, |e| e.term().get()),
+            prev_log_term: prev_log_term.get(),
         });
 
         // Timeout can be long because the follower's election timeout will not
