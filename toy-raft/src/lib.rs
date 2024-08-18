@@ -15,5 +15,5 @@ mod vote;
 mod writer;
 
 pub use actor::*;
-pub use message::{Index, NodeState, Term};
+pub use message::{AppendEntryError, Index, NodeState, Term};
 pub use state_machine::{ApplyResponse, StateMachine, StateMachineError};

@@ -10,6 +10,9 @@ pub type ApplyResponseSender = tokio::sync::oneshot::Sender<Option<ApplyResponse
 
 #[async_trait::async_trait]
 pub trait StateMachine {
+    /// Apply a new entry to the state machine.
+    ///
+    /// This method will never be called concurrently.
     // TODO: note that the apply shouldn't return StateMachineError if it's an
     // application error. For example, let's say a state machine only accept
     // each key once. If the same key already exists in the state machine, the
@@ -22,6 +25,11 @@ pub trait StateMachine {
     // To return an application error, have ApplyResponse contain Result.
     async fn apply(&self, entry: Entry) -> Result<Option<ApplyResponse>, StateMachineError>;
     async fn last_applied_index(&self) -> Result<Index, StateMachineError>;
+
+    // TODO: add a method to perform compaction.
+
+    // TODO: add a method to load a snapshot to be sent to stale followers which
+    // doesn't have truncated log entries.
 }
 
 #[derive(Debug, thiserror::Error)]

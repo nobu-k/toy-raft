@@ -83,6 +83,10 @@ impl Server {
             }
         }
     }
+
+    pub fn actor(&self) -> Arc<crate::actor::Actor> {
+        self.actor.clone()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

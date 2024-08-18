@@ -305,9 +305,14 @@ impl ActorProcess {
             .await
         {
             Ok(()) => {
-                self.commit_index_tx
-                    .send(Index::new(request.leader_commit))
-                    .unwrap();
+                self.commit_index_tx.send_if_modified(|index| {
+                    if index.get() < request.leader_commit {
+                        *index = Index::new(request.leader_commit);
+                        true
+                    } else {
+                        false
+                    }
+                });
                 Ok(grpc::AppendEntriesResponse {
                     term: self.state.current_term.get(),
                     success: true,

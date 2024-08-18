@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use std::{convert::Infallible, sync::Arc};
 
 use clap::Parser;
 use http_body_util::BodyExt;
@@ -6,7 +6,17 @@ use prometheus::Encoder;
 use tracing::info;
 
 pub struct IdGenerator {
+    next_id: std::sync::atomic::AtomicU64,
     last_applied_index: std::sync::atomic::AtomicU64,
+}
+
+impl IdGenerator {
+    pub fn new() -> Self {
+        IdGenerator {
+            next_id: std::sync::atomic::AtomicU64::new(1),
+            last_applied_index: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -17,7 +27,10 @@ impl toy_raft::StateMachine for IdGenerator {
     ) -> Result<Option<toy_raft::ApplyResponse>, toy_raft::StateMachineError> {
         self.last_applied_index
             .store(entry.index().get(), std::sync::atomic::Ordering::SeqCst);
-        Ok(None)
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Some(Arc::new(id)))
     }
 
     async fn last_applied_index(&self) -> Result<toy_raft::Index, toy_raft::StateMachineError> {
@@ -55,9 +68,7 @@ async fn main() -> anyhow::Result<()> {
         .id(args.id.clone())
         .addr(args.addr.clone())
         .peers(toy_raft::Peer::parse_args(&args.peer)?)
-        .state_machine(std::sync::Arc::new(IdGenerator {
-            last_applied_index: std::sync::atomic::AtomicU64::new(0),
-        }))
+        .state_machine(std::sync::Arc::new(IdGenerator::new()))
         .build()?;
 
     let subscriber = tracing_subscriber::fmt()
@@ -86,6 +97,30 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let server = toy_raft::Server::new(config).await?;
+    let actor = server.actor();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            match actor.append_entry(Arc::new(vec![]), true).await {
+                Ok(r) => match r {
+                    Ok(Some(id)) => {
+                        let id = id.downcast_ref::<u64>().unwrap();
+                        info!(generated_id = id, "New ID generated");
+                    }
+                    Ok(None) => {
+                        info!("No new ID generated");
+                    }
+                    Err(toy_raft::AppendEntryError::NotLeader(_)) => {}
+                    Err(e) => {
+                        info!(error = e.to_string(), "failed to append entry");
+                    }
+                },
+                Err(e) => {
+                    info!(error = e.to_string(), "failed to append entry");
+                }
+            }
+        }
+    });
     Ok(server.run().await?)
 }
 

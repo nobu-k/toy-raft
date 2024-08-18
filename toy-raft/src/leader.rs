@@ -135,12 +135,14 @@ impl CommitIndexSyncer {
             self.match_indexes[i] = *self.match_indexes_watcher[i].borrow();
             sorted.sort_unstable_by_key(|&i| self.match_indexes[i]);
             let new_commit_index = self.match_indexes[sorted[sorted.len() / 2]];
-            if new_commit_index > *self.commit_index.borrow() {
-                if let Err(_) = self.commit_index.send(new_commit_index) {
-                    // No receiver exists. This situation is the same as cancel.
-                    return;
+            self.commit_index.send_if_modified(|index| {
+                if index.get() < new_commit_index.get() {
+                    *index = new_commit_index;
+                    true
+                } else {
+                    false
                 }
-            }
+            });
         }
     }
 }
@@ -367,7 +369,7 @@ impl Follower {
         // this loop doesn't have to take care of it because it'll be processed
         // in the next iteration since the storage_updated watch will be
         // triggered.
-        while self.next_index < last_index {
+        while self.next_index <= last_index {
             match self.send_log_entry_batch().await {
                 Ok(()) => {}
                 Err(AppendEntriesError::NoEntryToSend) => break,
