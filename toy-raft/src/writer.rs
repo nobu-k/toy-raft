@@ -59,7 +59,7 @@ impl WriterProcess {
     async fn run(mut self) {
         loop {
             let mut backoff = tokio::time::Duration::from_millis(100);
-            let commit_index = *self.commit_index.borrow();
+            let commit_index = *self.commit_index.borrow_and_update();
             if commit_index.get() > 0 {
                 while self.next_index <= commit_index {
                     if self.apply(self.next_index).await.is_ok() {

@@ -99,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
     let server = toy_raft::Server::new(config).await?;
     let actor = server.actor();
     tokio::spawn(async move {
+        // TODO: a new leader will not generate an ID. check what's going on.
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             match actor.append_entry(Arc::new(vec![]), true).await {

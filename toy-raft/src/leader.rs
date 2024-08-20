@@ -125,14 +125,21 @@ impl CommitIndexSyncer {
                     return;
                 }
             };
-            // Push the selected future back to the waiters.
+
+            // Because change() is called on rx which has been cloned, the
+            // original rx didn't mark the value as seen. Therefore,
+            // borrow_and_update is required here.
+            self.match_indexes[i] = *self.match_indexes_watcher[i].borrow_and_update();
+
+            // Push the selected future back to the waiters. Place this code
+            // after borrow_and_update above so that the cloned rx is marked as
+            // seen.
             waiters = remaining;
             waiters.push(build_future(i, self.match_indexes_watcher[i].clone()));
 
             // Sort the current match indexes and find the median, which means
             // the majority of the followers have at least that index. The
             // leader's match_index is always the maximum.
-            self.match_indexes[i] = *self.match_indexes_watcher[i].borrow();
             sorted.sort_unstable_by_key(|&i| self.match_indexes[i]);
             let new_commit_index = self.match_indexes[sorted[sorted.len() / 2]];
             self.commit_index.send_if_modified(|index| {
@@ -448,10 +455,14 @@ impl Follower {
         if res.success {
             let matched = entries.last().unwrap().index();
             self.next_index = matched.next();
-            if let Err(_) = self.match_index.send(matched) {
-                // The leader is already gone.
-                return Err(AppendEntriesError::Canceled);
-            }
+            self.match_index.send_if_modified(|index| {
+                if *index != matched {
+                    *index = matched;
+                    true
+                } else {
+                    false
+                }
+            });
             return Ok(());
         }
 
