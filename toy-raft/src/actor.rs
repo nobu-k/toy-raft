@@ -35,6 +35,11 @@ impl Actor {
             .map(|peer| {
                 // Config has already been validated.
                 let url = peer.addr.parse::<http::Uri>().unwrap();
+
+                // TODO: the current client doesn't reconnect automatically.
+                // Support reconnection.
+                //
+                // See: https://github.com/hyperium/tonic/issues/1254
                 PeerClient {
                     id: Arc::new(peer.id.clone()),
                     client: grpc::raft_client::RaftClient::new(
