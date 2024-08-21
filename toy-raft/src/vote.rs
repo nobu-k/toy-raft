@@ -1,7 +1,7 @@
 use super::message::*;
 use crate::{grpc, metrics};
 use std::sync::Arc;
-use tracing::{info, info_span, warn, Instrument};
+use tracing::{error, info, info_span, warn, Instrument};
 
 pub struct Vote {
     vote_term: Term,

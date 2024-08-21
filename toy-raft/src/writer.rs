@@ -64,7 +64,8 @@ impl WriterProcess {
                 while self.next_index <= commit_index {
                     if self.apply(self.next_index).await.is_ok() {
                         self.next_index.inc();
-                        break;
+                        backoff = tokio::time::Duration::from_millis(100);
+                        continue;
                     }
                     tokio::time::sleep(backoff).await;
                     backoff = cmp::min(backoff * 2, tokio::time::Duration::from_secs(60));

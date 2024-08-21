@@ -100,9 +100,19 @@ async fn main() -> anyhow::Result<()> {
     let actor = server.actor();
     tokio::spawn(async move {
         // TODO: a new leader will not generate an ID. check what's going on.
+
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            match actor.append_entry(Arc::new(vec![]), true).await {
+
+            let res = tokio::select! {
+                res = actor.append_entry(Arc::new(vec![]), true) => res,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(10)) => {
+                    info!("ID generation timed out");
+                    continue;
+                }
+            };
+
+            match res {
                 Ok(r) => match r {
                     Ok(Some(id)) => {
                         let id = id.downcast_ref::<u64>().unwrap();

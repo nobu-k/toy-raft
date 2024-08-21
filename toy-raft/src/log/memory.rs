@@ -6,6 +6,7 @@ use crate::{
 use super::storage::*;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
+use tracing::info;
 
 pub struct MemoryStorage {
     entries: RwLock<Vec<Entry>>,
@@ -154,6 +155,9 @@ impl Storage for MemoryStorage {
                 // Remove the response channels for truncated entries.
                 self.response_channels
                     .write()
+                    // This async method can be canceled at this point. However,
+                    // it is safe because the garbage collection of truncated
+                    // channels can be performed in the next call.
                     .await
                     .retain(|index, _| *index <= prev_index);
                 Ok(())
