@@ -4,6 +4,7 @@ use clap::Parser;
 use http_body_util::BodyExt;
 use prometheus::Encoder;
 use tracing::info;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
 
 pub struct IdGenerator {
     next_id: std::sync::atomic::AtomicU64,
@@ -71,16 +72,21 @@ async fn main() -> anyhow::Result<()> {
         .state_machine(std::sync::Arc::new(IdGenerator::new()))
         .build()?;
 
-    let subscriber = tracing_subscriber::fmt()
+    let subscriber = tracing_subscriber::fmt::Layer::new()
         .json()
         .flatten_event(true)
         .with_current_span(false)
         .with_line_number(true)
         .with_thread_ids(true)
         .with_file(true)
-        .finish();
+        .with_filter(tracing::level_filters::LevelFilter::INFO)
+        .with_filter(tracing_subscriber::filter::FilterFn::new(|metadata| {
+            metadata.is_event()
+        }));
 
-    tracing::subscriber::set_global_default(subscriber)?;
+    tracing_subscriber::registry::Registry::default()
+        .with(subscriber)
+        .try_init()?;
 
     info!(addr = args.addr, id = args.id, "Starting server");
 
