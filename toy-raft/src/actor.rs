@@ -336,11 +336,13 @@ impl ActorProcess {
                 expected_term,
                 actual_term,
             }) => {
-                info!(
-                    expected_term = expected_term.get(),
-                    actual_term = actual_term.unwrap_or(Term::new(0)).get(),
-                    "Log inconsistency detected"
-                );
+                if let Some(actual_term) = actual_term {
+                    info!(
+                        expected_term = expected_term.get(),
+                        actual_term = actual_term.get(),
+                        "Log inconsistency detected"
+                    );
+                }
                 // TODO: return a hint to the leader for quicker recovery.
                 Ok(grpc::AppendEntriesResponse {
                     term: self.state.current_term.get(),
