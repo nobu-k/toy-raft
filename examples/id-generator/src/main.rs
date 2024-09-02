@@ -6,6 +6,9 @@ use prometheus::Encoder;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
 
+use opentelemetry::{trace::TracerProvider as _, KeyValue};
+use opentelemetry_sdk::{runtime::Tokio, trace::RandomIdGenerator, Resource};
+
 pub struct IdGenerator {
     next_id: std::sync::atomic::AtomicU64,
     last_applied_index: std::sync::atomic::AtomicU64,
@@ -65,6 +68,26 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::try_parse()?;
 
+    let otlp_exporter = opentelemetry_otlp::new_exporter().tonic();
+    let provider = opentelemetry_otlp::new_pipeline()
+        .tracing()
+        .with_exporter(otlp_exporter)
+        .with_trace_config(
+            opentelemetry_sdk::trace::Config::default()
+                .with_id_generator(RandomIdGenerator::default())
+                .with_max_events_per_span(64)
+                .with_max_attributes_per_span(16)
+                .with_max_events_per_span(16)
+                .with_resource(Resource::new(vec![KeyValue::new(
+                    "service.name",
+                    "toy_raft_id_generator",
+                )])),
+        )
+        .install_batch(Tokio)?;
+    let tracer_layer = tracing_opentelemetry::layer()
+        .with_tracer(provider.tracer("toy_raft_id_generator"))
+        .with_filter(tracing::level_filters::LevelFilter::INFO);
+
     let config = toy_raft::Config::builder()
         .id(args.id.clone())
         .addr(args.addr.clone())
@@ -85,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
         }));
 
     tracing_subscriber::registry::Registry::default()
+        .with(tracer_layer)
         .with(subscriber)
         .try_init()?;
 

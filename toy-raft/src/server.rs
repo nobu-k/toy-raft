@@ -4,7 +4,7 @@ use std::{
 };
 
 use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
-use tracing::{error, info, info_span};
+use tracing::{error, info, info_span, trace_span};
 
 use crate::{config, grpc, NodeState};
 
@@ -69,7 +69,7 @@ impl Server {
             .trace_fn(move |request| {
                 let path = request.uri().path().to_owned();
                 let method = request.method().to_string();
-                info_span!("toy_raft_server", id, method, path)
+                info_span!("toy_raft_server_request", id, method, path)
             })
             .add_service(raft_service)
             .add_service(operations_service)
