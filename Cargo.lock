@@ -1416,6 +1416,7 @@ dependencies = [
  "http",
  "hyper",
  "once_cell",
+ "opentelemetry",
  "pin-project-lite",
  "prometheus",
  "prost",
@@ -1428,6 +1429,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "tracing-opentelemetry",
 ]
 
 [[package]]

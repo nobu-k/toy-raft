@@ -4,7 +4,8 @@ use std::{
 };
 
 use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
-use tracing::{error, info, info_span, trace_span};
+use tracing::{error, info_span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::{config, grpc, NodeState};
 
@@ -69,7 +70,16 @@ impl Server {
             .trace_fn(move |request| {
                 let path = request.uri().path().to_owned();
                 let method = request.method().to_string();
-                info_span!("toy_raft_server_request", id, method, path)
+
+                let context = opentelemetry::global::get_text_map_propagator(|propagator| {
+                    propagator.extract(&Extractor {
+                        metadata: &request.headers(),
+                    })
+                });
+
+                let span = info_span!("toy_raft_server_request", id, method, path);
+                span.set_parent(context);
+                span
             })
             .add_service(raft_service)
             .add_service(operations_service)
@@ -86,6 +96,20 @@ impl Server {
 
     pub fn actor(&self) -> Arc<crate::actor::Actor> {
         self.actor.clone()
+    }
+}
+
+struct Extractor<'a> {
+    metadata: &'a http::HeaderMap<http::HeaderValue>,
+}
+
+impl<'a> opentelemetry::propagation::Extractor for Extractor<'a> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.metadata.get(key).and_then(|v| v.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.metadata.keys().map(|k| k.as_str()).collect()
     }
 }
 

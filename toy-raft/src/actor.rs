@@ -3,7 +3,7 @@ use crate::{grpc, state_machine::ApplyResponseReceiver, ApplyResponse};
 use super::{leader, log, message::*, vote, StateMachineError};
 use rand::{Rng, SeedableRng};
 use std::sync::Arc;
-use tracing::{error, info, trace};
+use tracing::{error, info, trace, Span};
 
 pub struct Actor {
     /// _cancel is to trigger the cancellation of the actor process when the
@@ -94,6 +94,7 @@ impl Actor {
         require_response: bool,
     ) -> Result<Result<Option<ApplyResponse>, AppendEntryError>, MessageError> {
         // TODO: refactor response error type.
+        // TODO: propagate the parent span context.
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.message_queue
             .send(Message::AppendEntry {

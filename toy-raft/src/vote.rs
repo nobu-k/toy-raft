@@ -1,7 +1,8 @@
 use super::message::*;
 use crate::{grpc, metrics};
-use std::sync::Arc;
-use tracing::{error, info, info_span, warn, Instrument};
+use std::{str::FromStr, sync::Arc};
+use tracing::{error, info, info_span, warn, Instrument, Span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 pub struct Vote {
     vote_term: Term,
@@ -166,6 +167,7 @@ impl VoteProcess {
 
     fn send_requests(&self) -> PeerJoinSet<grpc::RequestVoteResponse> {
         let args = &self.args;
+        let context = Span::current().context();
 
         let mut set = tokio::task::JoinSet::new();
         for p in args.peers.iter() {
@@ -178,6 +180,9 @@ impl VoteProcess {
 
             let mut p = p.clone();
             request.set_timeout(tokio::time::Duration::from_millis(100)); // TODO: make this configurable
+            opentelemetry::global::get_text_map_propagator(|propagator| {
+                propagator.inject_context(&context, &mut Injector(request.metadata_mut()));
+            });
             set.spawn(async move {
                 PeerJoinResponse {
                     id: p.id,
@@ -187,5 +192,17 @@ impl VoteProcess {
         }
 
         set
+    }
+}
+
+struct Injector<'a>(&'a mut tonic::metadata::MetadataMap);
+
+impl<'a> opentelemetry::propagation::Injector for Injector<'a> {
+    fn set(&mut self, key: &str, value: String) {
+        if let Ok(key) = tonic::metadata::MetadataKey::from_str(key) {
+            if let Ok(value) = value.parse() {
+                self.0.insert(key, value);
+            }
+        }
     }
 }

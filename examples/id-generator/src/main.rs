@@ -68,6 +68,10 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::try_parse()?;
 
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
+
     let otlp_exporter = opentelemetry_otlp::new_exporter().tonic();
     let provider = opentelemetry_otlp::new_pipeline()
         .tracing()
