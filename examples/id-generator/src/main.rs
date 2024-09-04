@@ -124,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
             if let Err(e) = run_metrics_server(addr).await {
                 info!(
                     error = anyhow::anyhow!(e).to_string(),
-                    "failed to start metrics server"
+                    "Failed to start metrics server"
                 );
             }
         });
